@@ -468,6 +468,10 @@ pub struct RefChange {
     pub cleared: bool,
     /// Whether the memory has any stale reference after the observation.
     pub stale: bool,
+    /// Whether the memory had a stale reference before the observation: it became stale with
+    /// this request when `stale` is true and this is false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub was_stale: bool,
 }
 
 /// A memory linked to a file, with the state of that link (TPL-05).
@@ -571,10 +575,11 @@ pub struct FilesChangedRequest {
 pub struct FilesChangedResult {
     /// References flagged stale, cleared or moved, of memories the caller may recall.
     pub changes: Vec<RefChange>,
-    /// Memories that became stale with this request, among those the caller may recall.
+    /// Memories that became stale with this request (they were not stale before it), among
+    /// those the caller may recall.
     pub flagged: u64,
-    /// Memories that are no longer stale (every file they are about was seen with its stored
-    /// content again), among those the caller may recall.
+    /// Memories that were stale and are no longer (every file they are about was seen with
+    /// its stored content again), among those the caller may recall.
     pub cleared: u64,
 }
 
@@ -1311,6 +1316,10 @@ pub struct ListQuery {
     /// Only records valid and unexpired at this time.
     #[serde(default)]
     pub live_at: Option<DateTime<Utc>>,
+    /// Leave out records with a stale code reference (TPL-04), inside the statement and so
+    /// before its limit. A list shows them by default.
+    #[serde(default)]
+    pub fresh_only: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -1609,7 +1618,9 @@ pub struct RecallRecord {
     pub as_of: Option<DateTime<Utc>>,
     /// The time validity was checked at.
     pub valid_at: DateTime<Utc>,
-    /// The recall also returned memories whose file had changed (`include_stale`, or `as_of`).
+    /// The recall did not leave out memories whose file had changed: it asked with
+    /// `include_stale`, or with `as_of`. It says what was asked, not that such a memory was
+    /// among the results.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub include_stale: bool,
     pub mode: RetrievalMode,

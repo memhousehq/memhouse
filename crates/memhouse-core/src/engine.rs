@@ -968,6 +968,9 @@ impl Engine {
                             session: Some(s.clone()),
                             tags: req.tags.clone(),
                             live_at: Some(now_valid),
+                            // Stale notes are left out by the statement too, or the newest
+                            // of them would use up its limit (TPL-04).
+                            fresh_only: !include_stale,
                             ..Default::default()
                         };
                         // Every filter is in the statement, before its limit: however many
@@ -1119,18 +1122,17 @@ impl Engine {
         let mut off_task: Vec<ExcludedRecord> = vec![];
         let procedure = |h: &Hit| h.memory.kind == MemoryKind::Procedural && h.memory.status == MemoryStatus::Committed;
         if policy.of(MemoryKind::Procedural).retrieval == crate::policy::Retrieval::TaskMatched && req.as_of.is_none() && hits.iter().chain(&reserve).any(procedure) {
-            let linked: std::collections::HashSet<Uuid> = if req.paths.is_empty() {
+            // The task's files in the form references are stored in (`./src//a.rs` is `src/a.rs`).
+            let paths: Vec<String> = req.paths.iter().filter_map(|p| crate::staleness::normalize_path(p)).collect();
+            let linked: std::collections::HashSet<Uuid> = if paths.is_empty() {
                 Default::default()
             } else {
                 statements += 1;
-                within(deadline, self.store.code_refs_at(&tenant, &subject, &req.paths).instrument(tracing::info_span!("recall.task")))
-                    .await?
-                    .into_iter()
-                    .map(|(id, _)| id)
-                    .collect()
+                within(deadline, self.store.code_refs_at(&tenant, &subject, &paths).instrument(tracing::info_span!("recall.task"))).await?.into_iter().map(|(id, _)| id).collect()
             };
             let values = self.languages.values();
             let on_task = |m: &Memory| linked.contains(&m.id) || req.tags.is_some() || values.matches_task(&req.query, &format!("{} {}", m.content, m.tags.join(" ")));
+            let fetched = hits.len();
             hits.retain(|h| {
                 let keep = !procedure(h) || on_task(&h.memory);
                 if !keep {
@@ -1143,6 +1145,25 @@ impl Engine {
                 keep
             });
             reserve.retain(|h| !procedure(h) || on_task(&h.memory));
+            // The places the procedures took are filled from the memories ranked below them:
+            // the same search without procedural memory, so a procedure that does not match
+            // never costs the caller a memory that does (k = 1 would otherwise return nothing).
+            let other_kinds: Vec<MemoryKind> = req.kinds.clone().unwrap_or_else(|| MemoryKind::ALL.to_vec()).into_iter().filter(|k| *k != MemoryKind::Procedural).collect();
+            if hits.len() < fetched && !other_kinds.is_empty() && !working_only {
+                let mut refill = q.clone();
+                refill.kinds = Some(other_kinds);
+                refill.limit = fused_limit;
+                let mut more = within(deadline, self.store.search(&refill).instrument(tracing::info_span!("recall.task_refill"))).await?;
+                statements += 1;
+                let have: std::collections::HashSet<Uuid> = hits.iter().chain(&reserve).map(|h| h.memory.id).collect();
+                more.retain(|h| !have.contains(&h.memory.id));
+                more.truncate(fetched - hits.len());
+                crate::pack::score(&mut more, rank, req.as_of.unwrap_or(present), present);
+                hits.extend(more);
+                // Among themselves in rank order, as every list is; a reranked head keeps its
+                // place, since its scores are on a higher scale.
+                hits.sort_by(|a, b| b.score.total_cmp(&a.score));
+            }
         }
 
         if !exact_hits.is_empty() {
@@ -1166,7 +1187,7 @@ impl Engine {
         let mut overridden: Vec<ExcludedRecord> = vec![];
         let keyed = |h: &Hit| h.memory.kind == MemoryKind::Preference && h.memory.status == MemoryStatus::Committed && h.memory.metadata.get("pref_key").is_some();
         if req.as_of.is_none() && policy.of(MemoryKind::Preference).retrieval == crate::policy::Retrieval::ScopeOrdered && hits.iter().any(keyed) {
-            let reader = crate::preference::Reader { scope: &scope, denied_labels: &ctx.denied_labels, shared_agents: &ctx.shared_agents };
+            let reader = crate::preference::Reader { scope: &scope, denied_labels: &ctx.denied_labels, shared_agents: &ctx.shared_agents, include_stale };
             let effective = within(deadline, self.effective_preferences(&tenant, &subject, None, &reader).instrument(tracing::info_span!("recall.preferences"))).await?;
             statements += 1;
             crate::preference::apply_overrides(&mut hits, &effective, req.tags.as_deref(), req.exact.is_some(), &mut overridden);
@@ -1215,6 +1236,8 @@ impl Engine {
             }));
         }
         cut.extend(overridden);
+        // A procedure the exact probe returned after all is not also listed as left out.
+        off_task.retain(|x| !hits.iter().any(|h| h.memory.id == x.id));
         cut.extend(off_task);
         // PERF-06: the token budget is a hard cap on the returned memories and on the block.
         let format = req.render_format.or(req.render.then_some(RenderFormat::Plain));
@@ -1616,6 +1639,7 @@ impl Engine {
                 session: None,
                 tags: None,
                 live_at: None,
+                fresh_only: false,
             })
             .await
     }
@@ -1653,6 +1677,7 @@ impl Engine {
             session: None,
             tags: None,
             live_at: None,
+            fresh_only: false,
         };
         let mut items = self.store.list(&q).await?;
         let next_cursor = if items.len() > limit {

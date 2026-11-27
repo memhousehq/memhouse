@@ -305,12 +305,13 @@ export interface FilesChangedResult {
    */
   changes: RefChange[];
   /**
-   * Memories that are no longer stale (every file they are about was seen with its stored
-   * content again), among those the caller may recall.
+   * Memories that were stale and are no longer (every file they are about was seen with
+   * its stored content again), among those the caller may recall.
    */
   cleared: number;
   /**
-   * Memories that became stale with this request, among those the caller may recall.
+   * Memories that became stale with this request (they were not stale before it), among
+   * those the caller may recall.
    */
   flagged: number;
 }
@@ -1263,7 +1264,9 @@ export interface RecallRecord {
   cut?: ExcludedRecord[];
   denied_labels: string[];
   /**
-   * The recall also returned memories whose file had changed (`include_stale`, or `as_of`).
+   * The recall did not leave out memories whose file had changed: it asked with
+   * `include_stale`, or with `as_of`. It says what was asked, not that such a memory was
+   * among the results.
    */
   include_stale?: boolean;
   k: number;
@@ -1470,6 +1473,11 @@ export interface RefChange {
    * Whether the memory has any stale reference after the observation.
    */
   stale: boolean;
+  /**
+   * Whether the memory had a stale reference before the observation: it became stale with
+   * this request when `stale` is true and this is false.
+   */
+  was_stale?: boolean;
 }
 
 /**
@@ -1962,7 +1970,7 @@ export abstract class GeneratedClient {
   /**
    * Report files that changed, were deleted or renamed.
    *
-   * Marks staleness in batch (TPL-04), what a post-commit hook calls: for files the agent never opened too. A changed file carries its new content hash, a deleted one `deleted`, a renamed one `renamed_from` and its hash. A memory with a stale reference is left out of default recall until it is revalidated, revised or forgotten. The answer lists the changes to memories the caller may recall. Needs `memory:write`. Audited as `memory.stale`, `memory.fresh` and `memory.code_moved`.
+   * Marks staleness in batch (TPL-04), what a post-commit hook calls: for files the agent never opened too. A changed file carries its new content hash, a deleted one `deleted`, a renamed one `renamed_from` and its hash. A memory with a stale reference is left out of default recall until it is revalidated, revised or forgotten. The answer lists the changes to memories a recall could give the caller now (committed, valid, unexpired); `flagged` and `cleared` count the memories whose staleness this request changed (`was_stale` against `stale`), not the references. References and their audit events are written in one transaction. Needs `memory:write`. Audited as `memory.stale`, `memory.fresh` and `memory.code_moved`.
    *
    * `POST /v1/code/changed`. Stability: stable.
    *
@@ -1976,7 +1984,7 @@ export abstract class GeneratedClient {
   /**
    * Confirm that a stale memory still holds.
    *
-   * Revalidation (TPL-04): the memory's code references take the files' current hashes and are no longer stale, so the memory returns to default recall. With `code_refs`, those references take the given hashes; without, every stale reference takes the hash its file was last seen with (a reference to a deleted file has none: revise or forget the memory, or give `code_refs`). Needs `memory:write` and sight of the memory. Audited as `memory.revalidate`.
+   * Revalidation (TPL-04): code references of the memory take a hash the caller vouches for and are no longer stale. With `code_refs`, only the references named take the given hashes (a partial revalidation: `stale` in the answer stays true while another reference is stale, and the memory returns to default recall only when none is); without, every stale reference takes the hash its file was last seen with, which is the checked content only if nothing changed the file since (a reference to a deleted file has none: revise or forget the memory, or give `code_refs`). Needs `memory:write` and sight of the memory. Audited as `memory.revalidate`.
    *
    * `POST /v1/code/revalidate`. Stability: stable.
    *

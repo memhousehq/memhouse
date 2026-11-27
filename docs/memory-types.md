@@ -95,6 +95,8 @@ What bounds it:
 - **The count is of proposals, and an agent makes them.** The server can't tell a correction a
   person gave from one an agent says it was given: an agent that repeats a correction three
   times promotes it. A deployment that does not accept that sets the key to `0`.
+- **A plan or a guess is not a correction.** A write the statement gate reads as a plan or as
+  speculation waits for its reviewer whatever mark it carries; repeating it commits nothing.
 - **Audited.** Each counted repeat writes `memory.signal`, and the promotion `memory.admit`,
   with `reason` (`repeated_correction: …`), `corrections` (the count) and `threshold` in the
   detail. The injection screen and redaction apply to every one of these writes.

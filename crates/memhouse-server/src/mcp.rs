@@ -123,7 +123,7 @@ fn build_tools() -> Value {
             "inputSchema": input_schema::<RememberRequest>(&["content", "kind", "subject", "tags", "occurred_at", "valid_to", "expires_at", "labels", "scope", "request_key", "wait", "code_refs", "metadata"], &["content"],
                 json!({"occurred_at": date, "valid_to": date, "expires_at": date,
                     "code_refs": {"description": "Files the memory is about, each with its content hash (`git hash-object <path>`). When a file changes, the memory is left out of recall until it is revalidated."},
-                    "metadata": {"type": "object", "description": "Free-form JSON object. Set {\"correction\": true} on a procedure (kind procedural) the user corrected you into: the same correction given repeatedly becomes a procedure without a reviewer."}})),
+                    "metadata": {"type": "object", "description": "Free-form JSON object. Set {\"correction\": true} on a procedure (kind procedural) the user corrected you into: where the deployment allows it (a correction threshold is set and the procedural gate is not raised to approval), the same correction given repeatedly becomes a procedure without a reviewer; otherwise it waits for review like any proposal."}})),
             "outputSchema": inline_schema::<RememberResult>()
         },
         {
@@ -159,9 +159,10 @@ fn build_tools() -> Value {
         {
             "name": "revalidate",
             "title": "Revalidate a memory",
-            "description": "Confirm that a memory written about an earlier version of a file still holds for the file as it is now. It returns to recall. Call it only after checking the memory against the file; if it no longer holds, revise or forget it instead.",
+            "description": "Confirm that a memory written about an earlier version of a file still holds for the file as it is now. Call it only after checking the memory against the file; if it no longer holds, revise or forget it instead. Pass code_refs with the hash of each file as you checked it (`git hash-object <path>`): only those references are revalidated, and the memory returns to recall once none is stale. Without code_refs each stale reference takes the hash its file was last reported with, which is the file you checked only if nothing changed it since.",
             "inputSchema": input_schema::<RevalidateRequest>(&["id", "code_refs"], &["id"],
-                json!({"id": {"description": "Id of the memory (from file_memories)."}})),
+                json!({"id": {"description": "Id of the memory (from file_memories)."},
+                    "code_refs": {"description": "The files you checked the memory against, each with its content hash as you checked it (`git hash-object <path>`)."}})),
             "outputSchema": inline_schema::<RevalidateResult>()
         },
         {

@@ -266,7 +266,9 @@ async fn touched(e: &Engine) -> Outcome {
         let needs: BTreeSet<Uuid> = r.needs_revalidation.iter().map(|l| l.memory.id).collect();
         expected_total += current.len();
         returned_total += current.intersection(&got).count();
-        let exact = got == current && needs == BTreeSet::from([old]) && !got.contains(&elsewhere) && !got.contains(&unlinked);
+        // Each memory once: a list that names one twice would put it into the agent's context twice.
+        let once = r.memories.len() == got.len() && r.needs_revalidation.len() == needs.len();
+        let exact = once && got == current && needs == BTreeSet::from([old]) && !got.contains(&elsewhere) && !got.contains(&unlinked);
         if exact {
             complete += 1;
         } else {
@@ -441,6 +443,150 @@ async fn until_revalidated(e: &Engine) -> Outcome {
     s.case("staleness is exported with the record", exported.len() == 1 && exported[0].stale_since.is_some() && exported[0].seen_hash.as_deref() == Some("x9"), || {
         format!("{exported:?}")
     });
+    // `flagged` counts memories that became stale: one that was stale already did not, when
+    // another of its files changes too.
+    let two = linked(&root, subj, &words("twofiles", 1), &[("src/t1.rs", "a1"), ("src/t2.rs", "b1")]).await?;
+    let first_file = root.files_changed(changed(subj, vec![FileState::present("src/t1.rs", "a2")])).await?;
+    let second_file = root.files_changed(changed(subj, vec![FileState::present("src/t2.rs", "b2")])).await?;
+    s.case(
+        "a memory that is stale already is not counted as becoming stale again",
+        first_file.flagged == 1
+            && second_file.flagged == 0
+            && second_file.changes.len() == 1
+            && second_file.changes[0].id == two
+            && second_file.changes[0].flagged
+            && second_file.changes[0].was_stale,
+        || format!("first file: {first_file:?}; second file: {second_file:?}"),
+    );
+    // Both files back to what the memory was written about, one after the other: counted as
+    // no longer stale only when the last one is.
+    let one_back = root.files_changed(changed(subj, vec![FileState::present("src/t1.rs", "a1")])).await?;
+    let both_back = root.files_changed(changed(subj, vec![FileState::present("src/t2.rs", "b1")])).await?;
+    s.case("a memory is counted as fresh again when its last stale file is", one_back.cleared == 0 && both_back.cleared == 1, || format!("{one_back:?}; {both_back:?}"));
+
+    // A revision takes effect against the files as they were last seen. One whose reference
+    // names other content than its file was last seen with starts stale (an observation that
+    // lands while a revision is on its way is the case this closes); one that names the
+    // content last seen starts fresh.
+    let rv = linked(&root, subj, &words("revised", 1), &[("src/rv.rs", "v1")]).await?;
+    root.files_changed(changed(subj, vec![FileState::present("src/rv.rs", "v2")])).await?;
+    let behind =
+        root.revise(ReviseRequest { id: rv, content: words("revised", 2), code_refs: Some(vec![CodeRef::new("src/rv.rs", "v1")]), wait: true, ..Default::default() }).await?;
+    let behind_refs = e.store.representations(TENANT, behind.id).await?.1;
+    let behind_stale = e.store.get(TENANT, behind.id).await?.is_some_and(|m| m.stale_since.is_some());
+    let current = root
+        .revise(ReviseRequest { id: behind.id, content: words("revised", 3), code_refs: Some(vec![CodeRef::new("src/rv.rs", "v2")]), wait: true, ..Default::default() })
+        .await?;
+    let current_fresh = e.store.get(TENANT, current.id).await?.is_some_and(|m| m.stale_since.is_none());
+    s.case(
+        "a revision about content its file no longer had is stale from the start",
+        behind.superseded == Some(rv)
+            && behind_stale
+            && behind_refs.len() == 1
+            && behind_refs[0].seen_hash.as_deref() == Some("v2")
+            && current.superseded == Some(behind.id)
+            && current_fresh,
+        || format!("successor stale: {behind_stale}, refs {behind_refs:?}; the next revision fresh: {current_fresh}"),
+    );
+
+    // A stale preference applies nowhere: it does not override the same preference at a
+    // broader scope, in a recall or in the preferences that apply.
+    let pref = |value: &str, scope: Scope, refs: Vec<CodeRef>| {
+        let mut r = RememberRequest {
+            subject: Some(subj.into()),
+            content: format!("Preference linewidth: {value}"),
+            kind: Some(MemoryKind::Preference),
+            structured: Some(Structured { record_type: "preference".into(), attrs: json!({ "key": "linewidth", "value": value }) }),
+            code_refs: refs,
+            wait: true,
+            ..Default::default()
+        };
+        r.scope = Some(scope);
+        r
+    };
+    let broad = root.remember(pref("100 columns", Scope { org: Some("acme".into()), ..Default::default() }, vec![])).await?;
+    let narrow =
+        root.remember(pref("80 columns", Scope { org: Some("acme".into()), team: Some("core".into()), ..Default::default() }, vec![CodeRef::new("rustfmt.toml", "f1")])).await?;
+    let applies = || async { Ok::<_, anyhow::Error>(root.preferences(subj, Some("linewidth"), None).await?.into_iter().map(|p| p.memory.id).collect::<Vec<_>>()) };
+    let before_change = applies().await?;
+    root.files_changed(changed(subj, vec![FileState::present("rustfmt.toml", "f2")])).await?;
+    let after_change = applies().await?;
+    let recalled = root.recall(ask(subj, "Preference linewidth columns")).await?;
+    s.case(
+        "a stale preference does not override a fresh one at a broader scope",
+        before_change == vec![narrow.id] && after_change == vec![broad.id] && has(&recalled, broad.id) && !has(&recalled, narrow.id),
+        || {
+            format!(
+                "applied before {before_change:?}, after {after_change:?} (broad {}, narrow {}); recalled broad {}, narrow {}",
+                broad.id,
+                narrow.id,
+                has(&recalled, broad.id),
+                has(&recalled, narrow.id)
+            )
+        },
+    );
+
+    // A session whose newest notes are all stale and fill the cache: an older note that is
+    // not stale is still within a recall's reach (the filter is in the statement, before its limit).
+    let mut small_cfg = (*e.cfg).clone();
+    small_cfg.memory.working_cache_items = 2;
+    let small = e.clone().reconfigure(small_cfg).caller(agent.who.clone());
+    let deep = Some(Scope { session: Some("deep".into()), ..Default::default() });
+    let note_in = |text: String, refs: Vec<CodeRef>| RememberRequest {
+        subject: Some(subj.into()),
+        content: text,
+        kind: Some(MemoryKind::Working),
+        scope: deep.clone(),
+        code_refs: refs,
+        wait: true,
+        ..Default::default()
+    };
+    let older = small.remember(note_in(words("oldnote", 1), vec![])).await?.id;
+    for i in 0..2 {
+        small.remember(note_in(words("newnote", i), vec![CodeRef::new("src/deep.rs", "d1")])).await?;
+    }
+    root.files_changed(changed(subj, vec![FileState::present("src/deep.rs", "d2")])).await?;
+    let reached = small.recall(RecallRequest { scope: deep.clone(), kinds: Some(vec![MemoryKind::Working]), k: Some(1), ..ask(subj, "anything") }).await?;
+    s.case("stale notes that fill the session cache do not hide an older fresh one", reached.hits.first().map(|h| h.memory.id) == Some(older), || {
+        format!("{:?}; expected {older}", reached.hits.iter().map(|h| h.memory.id).collect::<Vec<_>>())
+    });
+
+    // A suite that opens a file its conversation never linked tests nothing there: the replay
+    // is refused with the place, not scored without the checkpoint.
+    use memhouse_core::eval::{EvalTrigger, Suite as EvalSuite, SuiteConversation, SuiteQuestion, SuiteSession, SuiteTurn, SUITE_FORMAT_CODE};
+    let suite = |touch: &str| EvalSuite {
+        format: SUITE_FORMAT_CODE,
+        name: "touch-check".into(),
+        description: String::new(),
+        language: None,
+        k: 5,
+        conversations: vec![SuiteConversation {
+            id: "repo".into(),
+            sessions: vec![SuiteSession {
+                turns: vec![SuiteTurn {
+                    say: "Errors are reported as typed error enums.".into(),
+                    key: Some("errors".into()),
+                    files: vec!["src/errors.rs".into()],
+                    ..Default::default()
+                }],
+                ask: vec![SuiteQuestion { q: "Opening the errors module".into(), key: "errors".into(), touch: Some(touch.into()), ..Default::default() }],
+                ..Default::default()
+            }],
+        }],
+    };
+    let right = e.eval_replay(TENANT, &suite("src/errors.rs"), None, EvalTrigger::Manual).await;
+    let wrong = e.eval_replay(TENANT, &suite("src/erors.rs"), None, EvalTrigger::Manual).await;
+    s.case(
+        "a file-touched question about a file that is not there fails the replay",
+        right.as_ref().is_ok_and(|r| r.counts.touched == 1 && r.counts.touched_found == 1) && wrong.as_ref().is_err_and(|e| format!("{e:#}").contains("src/erors.rs")),
+        || {
+            format!(
+                "the right path: {:?}; the wrong one: {:?}",
+                right.map(|r| (r.counts.touched, r.counts.touched_found)).map_err(|e| format!("{e:#}")),
+                wrong.map(|r| r.counts.touched).map_err(|e| format!("{e:#}"))
+            )
+        },
+    );
     Ok(s.outcome("scenarios", "a stale memory is out of default recall on every path until it is revalidated or revised"))
 }
 
@@ -537,8 +683,30 @@ async fn access(e: &Engine) -> Outcome {
 
     // A caller that may only read: the answer compares, nothing is recorded.
     let events_before = e.store.audit_log(TENANT, 5000).await?.len();
+    // Everything stored about the three memories' links: the record's own mark and each
+    // reference with its marks. None of it may differ after a read-only caller's requests.
+    let stored = || async {
+        let mut all = vec![];
+        for id in [open, labelled, theirs] {
+            all.push((e.store.get(TENANT, id).await?.and_then(|m| m.stale_since), e.store.representations(TENANT, id).await?.1));
+        }
+        Ok::<_, anyhow::Error>(all)
+    };
+    let stored_before = stored().await?;
     let read_only = reader.file_touched(touch("b2")).await?;
-    let unmarked = e.store.get(TENANT, open).await?.is_some_and(|m| m.stale_since.is_none());
+    // A rename it reports is not recorded either, so the references are still at the old
+    // path: they are found there, and compared with the hash under the new name.
+    let renamed_same = reader.file_touched(opened(subj, FileEvent::Opened, vec![FileState::renamed(f, "src/invoicing.rs", "b1")])).await?;
+    let renamed_changed = reader.file_touched(opened(subj, FileEvent::Edited, vec![FileState::renamed(f, "src/invoicing.rs", "b7")])).await?;
+    s.case(
+        "a read-only caller's rename is looked up at the path the references still have",
+        renamed_same.memories.iter().map(|l| l.memory.id).collect::<BTreeSet<_>>() == BTreeSet::from([open, labelled])
+            && renamed_same.needs_revalidation.is_empty()
+            && renamed_changed.memories.is_empty()
+            && renamed_changed.needs_revalidation.iter().map(|l| l.memory.id).collect::<BTreeSet<_>>() == BTreeSet::from([open, labelled]),
+        || format!("same content: {:?}; other content: {:?}", seen(&renamed_same), seen(&renamed_changed)),
+    );
+    let unmarked = stored().await? == stored_before;
     let events_after = e.store.audit_log(TENANT, 5000).await?.len();
     s.case(
         "a read-only caller's hook records nothing, and still learns the memory is out of date",
@@ -562,7 +730,22 @@ async fn access(e: &Engine) -> Outcome {
 
     // The file changes. The fact about the file holds for every memory about it; the answer
     // still names only what the caller may recall.
+    // A memory the agent may see but a recall would no longer give it: past its expiry.
+    let brief = root
+        .remember(RememberRequest {
+            subject: Some(subj.into()),
+            content: words("brief", 1),
+            expires_at: Some(chrono::Utc::now() + chrono::Duration::milliseconds(900)),
+            code_refs: vec![CodeRef::new(f, "b1")],
+            wait: true,
+            ..Default::default()
+        })
+        .await?;
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
     let told = agent.files_changed(changed(subj, vec![FileState::present(f, "b2")])).await?;
+    s.case("a change does not name a memory past its expiry", brief.status == MemoryStatus::Committed && !told.changes.iter().any(|c| c.id == brief.id), || {
+        format!("written {}; named: {}", brief.status.as_str(), told.changes.iter().any(|c| c.id == brief.id))
+    });
     let told_ids: BTreeSet<Uuid> = told.changes.iter().map(|c| c.id).collect();
     let mut flagged = BTreeSet::new();
     for m in e.store.get_many(TENANT, &[open, labelled, theirs]).await? {
@@ -738,6 +921,75 @@ async fn promotion(e: &Engine) -> Outcome {
     s.case("a procedure linked to a file of the task matches it", by_file.status == MemoryStatus::Committed && !has(&without, by_file.id) && has(&with_path, by_file.id), || {
         format!("without the path: {}; with it: {}", has(&without, by_file.id), has(&with_path, by_file.id))
     });
+    // The task's paths are read in the form references are stored in.
+    let spelled =
+        agent.recall(RecallRequest { mode: Some(RetrievalMode::Dense), paths: vec!["./api//schema.json".into()], ..ask(subj, "what colour is the logo on the website") }).await?;
+    s.case("a path of the task is matched however it is spelled", has(&spelled, by_file.id), || "not matched as ./api//schema.json".into());
+    // A procedure the request's exact query names is returned whatever the task: and then it
+    // is not also listed as left out for the task.
+    let runbook = root
+        .remember(RememberRequest {
+            subject: Some(subj.into()),
+            content: "Restart the ingest workers after rotating the credentials.".into(),
+            kind: Some(MemoryKind::Procedural),
+            structured: Some(Structured { record_type: "runbook".into(), attrs: json!({ "id": "rb-1" }) }),
+            wait: true,
+            ..Default::default()
+        })
+        .await?;
+    let by_exact = root
+        .recall(RecallRequest {
+            mode: Some(RetrievalMode::Dense),
+            exact: Some(ExactQuery { record_type: Some("runbook".into()), attrs: json!({ "id": "rb-1" }) }),
+            ..ask(subj, "what colour is the logo on the website")
+        })
+        .await?;
+    let listed_out = match by_exact.recall_id {
+        Some(id) => root.explain(id).await?.excluded.into_iter().filter(|x| x.id == runbook.id).map(|x| x.reason).collect::<Vec<_>>(),
+        None => vec![ExclusionReason::Task],
+    };
+    s.case(
+        "a procedure returned by the exact query is not also listed as left out",
+        by_exact.hits.iter().any(|h| h.exact && h.memory.id == runbook.id) && listed_out.is_empty(),
+        || format!("returned exactly: {}; also excluded as {listed_out:?}", by_exact.hits.iter().any(|h| h.exact && h.memory.id == runbook.id)),
+    );
+    // A plan or a guess marked as a correction is still a plan: repeats do not commit it.
+    let planned = "We plan to move every install to bun next quarter.";
+    for _ in 0..4 {
+        agent.remember(correction(planned)).await?;
+    }
+    let plans = e
+        .store
+        .list(&ListQuery {
+            tenant: TENANT.into(),
+            subject: Some(subj.into()),
+            kinds: Some(vec![MemoryKind::Procedural]),
+            include_inactive: true,
+            limit: 1000,
+            ..Default::default()
+        })
+        .await?;
+    let committed_plans = plans.iter().filter(|m| m.content == planned && m.status == MemoryStatus::Committed).count();
+    s.case("a plan marked as a correction is not promoted by repeating it", committed_plans == 0 && plans.iter().any(|m| m.content == planned), || {
+        format!("{committed_plans} committed of {} stored", plans.iter().filter(|m| m.content == planned).count())
+    });
+    // A procedure that does not match the task never costs the caller the memory ranked
+    // below it: with k = 1 and no reserve (duplicate removal off), the place is filled.
+    let refill = "repo:refill";
+    let no_dedup = parse_spec(&format!("name = \"no-dedup\"\n[scope]\ntenant = \"{TENANT}\"\n[ranking]\ndedup = false\n"))?;
+    let version = e.policy_propose(TENANT, &no_dedup, "admin:bench", None).await?.version;
+    e.policy_approve(TENANT, version, "admin:bench").await?;
+    let near = root
+        .remember(RememberRequest { subject: Some(refill.into()), content: "abc def ghi".into(), kind: Some(MemoryKind::Procedural), wait: true, ..Default::default() })
+        .await?;
+    let below = root.remember(RememberRequest { subject: Some(refill.into()), content: "logo xyz qrs tuv".into(), wait: true, ..Default::default() }).await?;
+    let one = root.recall(RecallRequest { mode: Some(RetrievalMode::Dense), k: Some(1), ..ask(refill, "abc def ghi logo") }).await?;
+    e.policy_rollback(TENANT, Some(memhouse_core::policy::PolicyTarget::Default), "admin:bench").await?;
+    s.case(
+        "the place of a procedure that does not match is filled from below it",
+        near.status == MemoryStatus::Committed && one.hits.iter().map(|h| h.memory.id).collect::<Vec<_>>() == vec![below.id],
+        || format!("procedure {}; returned {:?}, expected [{}]", near.status.as_str(), one.hits.iter().map(|h| h.memory.id).collect::<Vec<_>>(), below.id),
+    );
     let touched = agent.file_touched(FileTouchedRequest { query: Some(task.into()), ..opened(subj, FileEvent::Opened, vec![FileState::present("api/schema.json", "s1")]) }).await?;
     s.case(
         "file-touched recall adds the procedures of the task",
@@ -816,7 +1068,7 @@ async fn hooks_in(e: &Engine, repo: &std::path::Path, s: &mut Suite) -> anyhow::
     });
     s.case("what the credential may not recall is not printed", !said.contains(&words("hooksecret", 1)) && !said.contains(&labelled.to_string()), || said.clone());
     let direct = {
-        let asked = hook::touched(HookEvent::FileOpened, Some(&claude), &opts)?.ok_or_else(|| anyhow::anyhow!("the hook found no file"))?;
+        let asked = hook::touched(HookEvent::FileOpened, Some(&claude), &opts).await?.ok_or_else(|| anyhow::anyhow!("the hook found no file"))?;
         let (status, body) = api(&agent_key).post("/v1/code/touched", &serde_json::to_value(&asked.request)?).await?;
         (status, hook::touched_output(Format::ClaudeCode, &asked, &body)?)
     };
@@ -824,8 +1076,9 @@ async fn hooks_in(e: &Engine, repo: &std::path::Path, s: &mut Suite) -> anyhow::
 
     // The file is edited. A hook with a read-only credential records nothing; the agent's does.
     std::fs::write(&file, b"fn pay() { todo!() }\n")?;
+    let refs_before = e.store.representations(TENANT, open).await?.1;
     let read_only = hook::run_touched(&api(&reader_key), HookEvent::FileEdited, Some(&gemini), &opts, Format::Gemini).await?;
-    let unmarked = e.store.get(TENANT, open).await?.is_some_and(|m| m.stale_since.is_none());
+    let unmarked = e.store.get(TENANT, open).await?.is_some_and(|m| m.stale_since.is_none()) && e.store.representations(TENANT, open).await?.1 == refs_before;
     s.case("a hook cannot record what its credential may not write", unmarked && read_only.contains("earlier version"), || format!("stale: {}; said {read_only}", !unmarked));
     let edited = hook::run_touched(&api(&agent_key), HookEvent::FileEdited, Some(&gemini), &opts, Format::Gemini).await?;
     let marked = e.store.get(TENANT, open).await?.is_some_and(|m| m.stale_since.is_some());

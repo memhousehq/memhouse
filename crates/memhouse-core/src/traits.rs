@@ -97,6 +97,19 @@ pub trait IntakeQueue: Send + Sync {
     async fn discard(&self, tenant: &str, scope: ForgetScope, value: &str) -> anyhow::Result<u64>;
 }
 
+/// Builds the audit events of an observation from the changes it made.
+pub type ObservationAudit<'a> = dyn for<'r> Fn(&'r [RefChange]) -> Vec<crate::intake::AuditEntry> + Send + Sync + 'a;
+/// Builds the audit events of a revalidation from (before, written, after).
+pub type RevalidationAudit<'a> = dyn for<'r> Fn(&'r [CodeRef], &'r [CodeRef], &'r [CodeRef]) -> Vec<crate::intake::AuditEntry> + Send + Sync + 'a;
+/// No audit event (the conformance kit, tests).
+pub fn no_audit(_: &[RefChange]) -> Vec<crate::intake::AuditEntry> {
+    vec![]
+}
+/// No audit event of a revalidation.
+pub fn no_revalidation_audit(_: &[CodeRef], _: &[CodeRef], _: &[CodeRef]) -> Vec<crate::intake::AuditEntry> {
+    vec![]
+}
+
 /// Which held candidates a write is compared with (see [`Store::nearest_held`]).
 #[derive(Debug, Clone, Copy)]
 pub struct Held<'a> {
@@ -425,16 +438,35 @@ pub trait Store: Send + Sync {
     /// belong to committed or candidate records, write what `staleness::plan` gives, and set
     /// each touched record's `stale_since` to the earliest of its stale references (none when
     /// no reference is stale). Returns the references that were flagged, cleared or moved,
-    /// each with its record's state afterwards. A record that is stale is left out by `search`,
-    /// `search_many` and `structured_lookup` unless the query has `include_stale`.
-    async fn code_refs_observe(&self, tenant: &str, subject: &str, files: &[FileState], at: chrono::DateTime<chrono::Utc>) -> anyhow::Result<Vec<RefChange>>;
+    /// each with its record's state before (`was_stale`) and afterwards (`stale`). A record
+    /// that is stale is left out by `search`, `search_many` and `structured_lookup` unless the
+    /// query has `include_stale`.
+    ///
+    /// What the contract needs of an implementation:
+    /// - two observations of one record never leave its `stale_since` out of step with its
+    ///   references: the records are locked (in id order) before their references are read;
+    /// - a batch of renames is written whatever order the rows come in (`b` to `c`, then `a`
+    ///   to `b`, on a record that references both);
+    /// - the audit events `audit` gives for the changes are written in the same transaction,
+    ///   so no change is left without its event.
+    async fn code_refs_observe(
+        &self,
+        tenant: &str,
+        subject: &str,
+        files: &[FileState],
+        at: chrono::DateTime<chrono::Utc>,
+        audit: &ObservationAudit<'_>,
+    ) -> anyhow::Result<Vec<RefChange>>;
     /// The code references of a subject at these paths, with the id of the record each belongs
     /// to, whatever the record's state; ordered by record id, then path.
     async fn code_refs_at(&self, tenant: &str, subject: &str, paths: &[String]) -> anyhow::Result<Vec<(Uuid, CodeRef)>>;
     /// Revalidate references of one record (`staleness::revalidated`): each takes its new hash
     /// and is no longer stale, and the record's `stale_since` follows. Returns the record's
-    /// references afterwards, or `None` when the tenant has no such record.
-    async fn code_refs_revalidate(&self, tenant: &str, id: Uuid, refs: Option<&[CodeRef]>) -> anyhow::Result<Option<Vec<CodeRef>>>;
+    /// references afterwards, or `None` when the tenant has no such record. `audit` is given
+    /// the references as they were, those written (with the hash each took) and the
+    /// references afterwards, all read inside the transaction; the events it gives are
+    /// written in that transaction.
+    async fn code_refs_revalidate(&self, tenant: &str, id: Uuid, refs: Option<&[CodeRef]>, audit: &RevalidationAudit<'_>) -> anyhow::Result<Option<Vec<CodeRef>>>;
 
     // Re-embedding to another model in place (see `reembed`). Stores that can't do it say so.
     /// The identity the stored vectors were made with, and the target of an unfinished re-embedding.

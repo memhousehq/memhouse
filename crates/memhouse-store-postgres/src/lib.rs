@@ -1914,6 +1914,7 @@ impl Store for PgStore {
              AND ($16::text IS NULL OR m.scope_session = $16) \
              AND ($18::text[] IS NULL OR m.tags && $18) \
              AND ($19::timestamptz IS NULL OR (m.valid_from <= $19 AND (m.valid_to IS NULL OR m.valid_to > $19) AND (m.expires_at IS NULL OR m.expires_at > $19))) \
+             AND (NOT $20::bool OR m.stale_since IS NULL) \
              ORDER BY m.created_at DESC, m.id DESC LIMIT $5 OFFSET $6"
         ))
         .bind(&q.tenant)
@@ -1935,6 +1936,7 @@ impl Store for PgStore {
         .bind(memhouse_core::access::NOBODY)
         .bind(&q.tags)
         .bind(q.live_at)
+        .bind(q.fresh_only)
         .fetch_all(&self.pool)
         .await?;
         rows.iter().map(row_to_memory).collect()
@@ -3202,21 +3204,44 @@ impl Store for PgStore {
     }
 
     #[tracing::instrument(name = "db.code_refs_observe", skip_all, fields(db.system = "postgresql", db.operation = "UPDATE", files = files.len()))]
-    async fn code_refs_observe(&self, tenant: &str, subject: &str, files: &[FileState], at: DateTime<Utc>) -> anyhow::Result<Vec<RefChange>> {
+    async fn code_refs_observe(
+        &self,
+        tenant: &str,
+        subject: &str,
+        files: &[FileState],
+        at: DateTime<Utc>,
+        audit: &memhouse_core::traits::ObservationAudit<'_>,
+    ) -> anyhow::Result<Vec<RefChange>> {
         let paths = memhouse_core::staleness::paths_of(files);
         if paths.is_empty() {
             return Ok(vec![]);
         }
         let mut tx = self.pool.begin().await?;
-        // Locked in one order (the primary key), so two observations of the same files queue
-        // instead of deadlocking; `OF c`: the record rows are only read here.
-        let rows: Vec<memhouse_core::staleness::RefRow> = sqlx::query(
-            "SELECT c.memory_id, c.path, c.blob_hash, c.stale_since, c.seen_hash FROM mh_code_ref c JOIN mh_memory m ON m.id = c.memory_id \
-             WHERE c.tenant = $1 AND c.subject = $2 AND c.path = ANY($3) AND m.tenant = $1 AND m.status IN ('committed', 'candidate') \
-             ORDER BY c.memory_id, c.path FOR UPDATE OF c",
+        // The records first, in id order, each statement on its own snapshot: a second
+        // observation of a record waits here, and then reads the references the first one
+        // committed. Taken after the references, the record lock would come too late: the
+        // aggregate that sets `stale_since` would run on a snapshot from before the other
+        // observation's commit and write over its result.
+        let before: std::collections::HashMap<Uuid, bool> = sqlx::query_as::<_, (Uuid, Option<DateTime<Utc>>)>(
+            "SELECT m.id, m.stale_since FROM mh_memory m \
+             WHERE m.tenant = $1 AND m.subject = $2 AND m.status IN ('committed', 'candidate') \
+               AND EXISTS (SELECT 1 FROM mh_code_ref c WHERE c.memory_id = m.id AND c.path = ANY($3)) \
+             ORDER BY m.id FOR UPDATE OF m",
         )
         .bind(tenant)
         .bind(subject)
+        .bind(&paths)
+        .fetch_all(&mut *tx)
+        .await?
+        .into_iter()
+        .map(|(id, since)| (id, since.is_some()))
+        .collect();
+        let locked: Vec<Uuid> = before.keys().copied().collect();
+        let rows: Vec<memhouse_core::staleness::RefRow> = sqlx::query(
+            "SELECT c.memory_id, c.path, c.blob_hash, c.stale_since, c.seen_hash FROM mh_code_ref c \
+             WHERE c.memory_id = ANY($1) AND c.path = ANY($2) ORDER BY c.memory_id, c.path FOR UPDATE OF c",
+        )
+        .bind(&locked)
         .bind(&paths)
         .fetch_all(&mut *tx)
         .await?
@@ -3227,35 +3252,54 @@ impl Store for PgStore {
         if updates.is_empty() {
             return Ok(vec![]);
         }
-        // Removals first: a reference dropped by a rename frees nothing another one moves onto
-        // (the plan drops it because the target exists), but the order keeps that obvious.
-        for u in updates.iter().filter(|u| u.now.is_none()) {
+        // A row whose path changes is removed and written again, after every removal: moved
+        // in place, `a` to `b` would meet the row of `b` that the same batch moves to `c`.
+        for u in updates.iter().filter(|u| u.now.as_ref().is_none_or(|c| c.path != u.path)) {
             sqlx::query("DELETE FROM mh_code_ref WHERE memory_id = $1 AND path = $2").bind(u.id).bind(&u.path).execute(&mut *tx).await?;
         }
         for u in &updates {
             let Some(c) = &u.now else { continue };
-            sqlx::query("UPDATE mh_code_ref SET path = $3, stale_since = $4, seen_hash = $5 WHERE memory_id = $1 AND path = $2")
-                .bind(u.id)
-                .bind(&u.path)
-                .bind(&c.path)
-                .bind(c.stale_since)
-                .bind(&c.seen_hash)
-                .execute(&mut *tx)
-                .await?;
+            if c.path == u.path {
+                sqlx::query("UPDATE mh_code_ref SET stale_since = $3, seen_hash = $4 WHERE memory_id = $1 AND path = $2")
+                    .bind(u.id)
+                    .bind(&u.path)
+                    .bind(c.stale_since)
+                    .bind(&c.seen_hash)
+                    .execute(&mut *tx)
+                    .await?;
+            } else {
+                sqlx::query("INSERT INTO mh_code_ref (memory_id, tenant, subject, path, blob_hash, stale_since, seen_hash) VALUES ($1, $2, $3, $4, $5, $6, $7)")
+                    .bind(u.id)
+                    .bind(tenant)
+                    .bind(subject)
+                    .bind(&c.path)
+                    .bind(&c.blob_hash)
+                    .bind(c.stale_since)
+                    .bind(&c.seen_hash)
+                    .execute(&mut *tx)
+                    .await?;
+            }
         }
         let mut ids: Vec<Uuid> = updates.iter().map(|u| u.id).collect();
         ids.sort();
         ids.dedup();
         let stale: std::collections::HashMap<Uuid, Option<DateTime<Utc>>> = sqlx::query_as(RESTALE_SQL).bind(tenant).bind(&ids).fetch_all(&mut *tx).await?.into_iter().collect();
-        tx.commit().await?;
-        Ok(updates
+        let changes: Vec<RefChange> = updates
             .into_iter()
             .filter_map(|u| u.change)
             .map(|mut c| {
                 c.stale = stale.get(&c.id).is_some_and(|s| s.is_some());
+                c.was_stale = before.get(&c.id).copied().unwrap_or(false);
                 c
             })
-            .collect())
+            .collect();
+        // With the changes, or not at all: a change without its audit event could not be
+        // audited later, since a repeated observation finds nothing left to change.
+        for entry in audit(&changes) {
+            self.audit_in(&mut tx, tenant, &entry).await?;
+        }
+        tx.commit().await?;
+        Ok(changes)
     }
 
     async fn code_refs_at(&self, tenant: &str, subject: &str, paths: &[String]) -> anyhow::Result<Vec<(Uuid, CodeRef)>> {
@@ -3274,7 +3318,13 @@ impl Store for PgStore {
     }
 
     #[tracing::instrument(name = "db.code_refs_revalidate", skip_all, fields(db.system = "postgresql", db.operation = "UPDATE"))]
-    async fn code_refs_revalidate(&self, tenant: &str, id: Uuid, refs: Option<&[CodeRef]>) -> anyhow::Result<Option<Vec<CodeRef>>> {
+    async fn code_refs_revalidate(
+        &self,
+        tenant: &str,
+        id: Uuid,
+        refs: Option<&[CodeRef]>,
+        audit: &memhouse_core::traits::RevalidationAudit<'_>,
+    ) -> anyhow::Result<Option<Vec<CodeRef>>> {
         const REFS: &str = "SELECT c.path, c.blob_hash, c.stale_since, c.seen_hash FROM mh_code_ref c JOIN mh_memory m ON m.id = c.memory_id \
              WHERE m.tenant = $1 AND c.memory_id = $2 ORDER BY c.path";
         let mut tx = self.pool.begin().await?;
@@ -3282,7 +3332,8 @@ impl Store for PgStore {
             return Ok(None);
         }
         let stored: Vec<CodeRef> = sqlx::query(REFS).bind(tenant).bind(id).fetch_all(&mut *tx).await?.iter().map(row_to_code_ref).collect::<anyhow::Result<_>>()?;
-        for c in memhouse_core::staleness::revalidated(&stored, refs)? {
+        let written = memhouse_core::staleness::revalidated(&stored, refs)?;
+        for c in &written {
             sqlx::query("UPDATE mh_code_ref SET blob_hash = $3, stale_since = NULL, seen_hash = NULL WHERE memory_id = $1 AND path = $2")
                 .bind(id)
                 .bind(&c.path)
@@ -3291,7 +3342,11 @@ impl Store for PgStore {
                 .await?;
         }
         sqlx::query(RESTALE_SQL).bind(tenant).bind(vec![id]).execute(&mut *tx).await?;
-        let after = sqlx::query(REFS).bind(tenant).bind(id).fetch_all(&mut *tx).await?.iter().map(row_to_code_ref).collect::<anyhow::Result<_>>()?;
+        let after: Vec<CodeRef> = sqlx::query(REFS).bind(tenant).bind(id).fetch_all(&mut *tx).await?.iter().map(row_to_code_ref).collect::<anyhow::Result<_>>()?;
+        // The event says what this transaction read and wrote, and is written with it.
+        for entry in audit(&stored, &written, &after) {
+            self.audit_in(&mut tx, tenant, &entry).await?;
+        }
         tx.commit().await?;
         Ok(Some(after))
     }

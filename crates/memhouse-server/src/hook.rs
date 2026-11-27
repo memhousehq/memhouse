@@ -181,7 +181,7 @@ pub const MAX_HASHED_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Build the API request for a file hook from the harness's input (or the paths in `opts`).
 /// `None` when there is nothing to ask: no file named, or none inside a git repository.
-pub fn touched(event: HookEvent, input: Option<&Value>, opts: &HookOpts) -> anyhow::Result<Option<Touched>> {
+pub async fn touched(event: HookEvent, input: Option<&Value>, opts: &HookOpts) -> anyhow::Result<Option<Touched>> {
     let cwd = input.and_then(|i| i["cwd"].as_str()).map(PathBuf::from).or_else(|| opts.cwd.clone()).or_else(|| std::env::current_dir().ok()).unwrap_or_default();
     let named: Vec<PathBuf> = if opts.paths.is_empty() { input.and_then(tool_path).map(PathBuf::from).into_iter().collect() } else { opts.paths.clone() };
     let mut repo: Option<Repo> = None;
@@ -200,11 +200,10 @@ pub fn touched(event: HookEvent, input: Option<&Value>, opts: &HookOpts) -> anyh
             continue;
         }
         let Some(path) = repo.relative(&file) else { continue };
-        let small = std::fs::metadata(&file).map(|m| m.len() <= MAX_HASHED_BYTES).unwrap_or(false);
-        let state = match small.then(|| std::fs::read(&file)) {
-            Some(Ok(bytes)) => FileState::present(path, git_blob_hash(&bytes, repo.objects)),
+        let state = match blob_hash(repo, &file).await {
+            Some(hash) => FileState::present(path, hash),
             // Unreadable or too large to hash: looked up, nothing recorded about it.
-            _ => FileState { path, ..Default::default() },
+            None => FileState { path, ..Default::default() },
         };
         if !files.iter().any(|f: &FileState| f.path == state.path) {
             files.push(state);
@@ -221,6 +220,42 @@ pub fn touched(event: HookEvent, input: Option<&Value>, opts: &HookOpts) -> anyh
         ..Default::default()
     };
     Ok(Some(Touched { request, subject, paths, hook_event_name: input.and_then(|i| i["hook_event_name"].as_str()).map(String::from) }))
+}
+
+/// The content hash of a file as git would store it, or `None` for a file that can't be read
+/// or is larger than [`MAX_HASHED_BYTES`].
+///
+/// git is asked when it is installed (`git hash-object`): it applies the repository's
+/// conversions (line endings under `core.autocrlf`, clean filters such as Git LFS), so the
+/// hash is the one a commit of the file records and the post-commit hook reports. Without a
+/// git binary the hash is computed here from the bytes on disk, which is the same hash
+/// wherever git stores the file as it is.
+pub async fn blob_hash(repo: &Repo, file: &Path) -> Option<String> {
+    use std::io::Read;
+    if std::fs::metadata(file).ok()?.len() > MAX_HASHED_BYTES {
+        return None;
+    }
+    if let Ok(out) = git(&repo.root, &[std::ffi::OsStr::new("hash-object"), std::ffi::OsStr::new("--"), file.as_os_str()]).await {
+        let hash = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if out.status.success() && hash.len() >= 40 && hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Some(hash);
+        }
+    }
+    // No more than the limit is ever read, also when the file grew after its size was taken.
+    let mut bytes = Vec::new();
+    std::fs::File::open(file).ok()?.take(MAX_HASHED_BYTES + 1).read_to_end(&mut bytes).ok()?;
+    (bytes.len() as u64 <= MAX_HASHED_BYTES).then(|| git_blob_hash(&bytes, repo.objects))
+}
+
+/// Run git in a repository. The process is killed when the future is dropped, so a hook's
+/// deadline also ends a git that hangs; and it acts on the repository named, not on one a
+/// calling git hook points at.
+pub async fn git<S: AsRef<std::ffi::OsStr>>(root: &Path, args: &[S]) -> anyhow::Result<std::process::Output> {
+    let mut git = tokio::process::Command::new("git");
+    for name in GIT_REPOSITORY_ENV {
+        git.env_remove(name);
+    }
+    Ok(git.arg("-C").arg(root).args(args).stdin(std::process::Stdio::null()).kill_on_drop(true).output().await?)
 }
 
 /// The answer of `POST /v1/code/touched` as the harness takes it.
@@ -282,22 +317,16 @@ pub fn parse_raw_diff(raw: &[u8]) -> Vec<FileState> {
 /// The files a commit changed, deleted or renamed, from git (`git diff --raw`): `to` against
 /// `from`, or against its first parent, or everything it holds when it has none. Runs the git
 /// binary, which a post-commit hook has by definition.
-pub fn commit_files(repo: &Repo, from: Option<&str>, to: &str) -> anyhow::Result<(String, Vec<FileState>)> {
-    let git = |args: &[&str]| -> anyhow::Result<std::process::Output> {
-        let mut git = std::process::Command::new("git");
-        // The repository is the one named, not one a calling git hook points at.
-        for name in GIT_REPOSITORY_ENV {
-            git.env_remove(name);
-        }
-        Ok(git.arg("-C").arg(&repo.root).args(args).stdin(std::process::Stdio::null()).output()?)
-    };
-    let sha = String::from_utf8_lossy(&git(&["rev-parse", "--verify", "-q", to])?.stdout).trim().to_string();
+pub async fn commit_files(repo: &Repo, from: Option<&str>, to: &str) -> anyhow::Result<(String, Vec<FileState>)> {
+    let sha = String::from_utf8_lossy(&git(&repo.root, &["rev-parse", "--verify", "-q", to]).await?.stdout).trim().to_string();
     anyhow::ensure!(!sha.is_empty(), "git knows no commit {to} in {}", repo.root.display());
     let parent = format!("{sha}^");
     let out = match from {
-        Some(f) => git(&["diff", "--raw", "-z", "-M", "--no-abbrev", f, &sha])?,
-        None if git(&["rev-parse", "--verify", "-q", &parent])?.status.success() => git(&["diff", "--raw", "-z", "-M", "--no-abbrev", &parent, &sha])?,
-        None => git(&["diff-tree", "--root", "-r", "--raw", "-z", "-M", "--no-abbrev", "--no-commit-id", &sha])?,
+        Some(f) => git(&repo.root, &["diff", "--raw", "-z", "-M", "--no-abbrev", f, &sha]).await?,
+        None if git(&repo.root, &["rev-parse", "--verify", "-q", &parent]).await?.status.success() => {
+            git(&repo.root, &["diff", "--raw", "-z", "-M", "--no-abbrev", &parent, &sha]).await?
+        }
+        None => git(&repo.root, &["diff-tree", "--root", "-r", "--raw", "-z", "-M", "--no-abbrev", "--no-commit-id", &sha]).await?,
     };
     anyhow::ensure!(out.status.success(), "git diff failed: {}", String::from_utf8_lossy(&out.stderr).trim());
     Ok((sha, parse_raw_diff(&out.stdout)))
@@ -340,25 +369,55 @@ async fn ask(api: &dyn Transport, path: &str, body: &Value) -> anyhow::Result<Va
 /// A file hook, start to finish: the request from the harness's input, the API call, the
 /// answer in the harness's form. Errors are the caller's to swallow ([`fail_open`]).
 pub async fn run_touched(api: &dyn Transport, event: HookEvent, input: Option<&Value>, opts: &HookOpts, format: Format) -> anyhow::Result<String> {
-    let Some(asked) = touched(event, input, opts)? else { return Ok(format.nothing().to_string()) };
+    let Some(asked) = touched(event, input, opts).await? else { return Ok(format.nothing().to_string()) };
+    run_asked(api, &asked, format).await
+}
+
+/// The API call and the answer for a request already built ([`touched`]).
+pub async fn run_asked(api: &dyn Transport, asked: &Touched, format: Format) -> anyhow::Result<String> {
     let answer = ask(api, "/v1/code/touched", &serde_json::to_value(&asked.request)?).await?;
-    touched_output(format, &asked, &answer)
+    touched_output(format, asked, &answer)
 }
 
 /// The post-commit hook: report the commit's files, and say what was flagged.
+///
+/// Every batch is attempted. A file the API would refuse (a path over its limit) is left out
+/// of its batch instead of failing it, and a batch that fails does not stop the ones after
+/// it: the error then names the commit and what was not reported, after the rest was.
 pub async fn run_post_commit(api: &dyn Transport, repo: &Repo, subject: Option<&str>, from: Option<&str>, to: &str) -> anyhow::Result<String> {
-    let (sha, files) = commit_files(repo, from, to)?;
+    let (sha, files) = commit_files(repo, from, to).await?;
     let subject = subject.map(String::from).unwrap_or_else(|| repo.subject());
+    report_commit(api, &subject, &sha, files).await
+}
+
+/// Report a commit's files (see [`run_post_commit`]).
+pub async fn report_commit(api: &dyn Transport, subject: &str, sha: &str, files: Vec<FileState>) -> anyhow::Result<String> {
+    let (valid, refused): (Vec<FileState>, Vec<FileState>) = files.into_iter().partition(|f| memhouse_core::staleness::observed_files(std::slice::from_ref(f)).is_ok());
     let (mut flagged, mut cleared) = (0, 0);
-    for req in changed_requests(&subject, &format!("commit {sha}"), &files) {
-        let answer = ask(api, "/v1/code/changed", &serde_json::to_value(&req)?).await?;
-        flagged += answer["flagged"].as_u64().unwrap_or(0);
-        cleared += answer["cleared"].as_u64().unwrap_or(0);
+    let mut failed: Vec<String> = vec![];
+    let batches = changed_requests(subject, &format!("commit {sha}"), &valid);
+    let n = batches.len();
+    for (i, req) in batches.into_iter().enumerate() {
+        match ask(api, "/v1/code/changed", &serde_json::to_value(&req)?).await {
+            Ok(answer) => {
+                flagged += answer["flagged"].as_u64().unwrap_or(0);
+                cleared += answer["cleared"].as_u64().unwrap_or(0);
+            }
+            Err(e) => failed.push(format!("batch {} of {n} ({} files): {e:#}", i + 1, req.files.len())),
+        }
     }
-    Ok(match (flagged, cleared) {
+    let said = match (flagged, cleared) {
         (0, 0) => String::new(),
         _ => format!("memhouse: {flagged} memories about files of this commit need revalidation, {cleared} are current again ({subject})"),
-    })
+    };
+    if failed.is_empty() && refused.is_empty() {
+        return Ok(said);
+    }
+    let mut what = failed;
+    if !refused.is_empty() {
+        what.push(format!("{} file(s) the API does not accept were left out (a path over {MAX_PATH_LEN} characters, or outside the repository)", refused.len()));
+    }
+    anyhow::bail!("commit {sha} was not fully reported for {subject}: {}{}", what.join("; "), if said.is_empty() { String::new() } else { format!(". Reported: {said}") })
 }
 
 /// A hook never fails its caller: an error becomes the format's empty answer on stdout and
@@ -399,6 +458,35 @@ mod tests {
         assert!(parse_raw_diff(b"").is_empty());
     }
 
+    /// Answers every batch but the second, and counts what it was sent.
+    struct SecondFails(std::sync::Mutex<Vec<usize>>);
+
+    #[async_trait::async_trait]
+    impl Transport for SecondFails {
+        async fn post(&self, _path: &str, body: &Value) -> anyhow::Result<(u16, Value)> {
+            let mut seen = self.0.lock().unwrap();
+            seen.push(body["files"].as_array().map(|f| f.len()).unwrap_or(0));
+            Ok(if seen.len() == 2 { (503, json!({"error": "try again"})) } else { (200, json!({"flagged": 1, "cleared": 0, "changes": []})) })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_failed_batch_does_not_stop_the_ones_after_it() {
+        let mut files: Vec<FileState> = (0..2 * MAX_FILES + 5).map(|i| FileState::present(format!("src/f{i}.rs"), "h")).collect();
+        // One path the API would refuse: left out, not sent, and named in the error.
+        files.push(FileState::present("x".repeat(MAX_PATH_LEN + 1), "h"));
+        let api = SecondFails(Default::default());
+        let e = report_commit(&api, "repo:big", "abc123", files).await.unwrap_err().to_string();
+        assert_eq!(*api.0.lock().unwrap(), vec![MAX_FILES, MAX_FILES, 5], "every batch is attempted, without the refused file");
+        assert!(
+            e.contains("commit abc123") && e.contains("batch 2 of 3") && e.contains("503") && e.contains("1 file(s) the API does not accept") && e.contains("2 memories"),
+            "{e}"
+        );
+        // Nothing refused and nothing failed: the plain summary.
+        let ok = report_commit(&SecondFails(Default::default()), "repo:big", "abc123", vec![FileState::present("a.rs", "h")]).await.unwrap();
+        assert!(ok.contains("1 memories"), "{ok}");
+    }
+
     #[test]
     fn the_file_of_a_tool_call() {
         // Claude Code, PostToolUse of Read; Gemini CLI, AfterTool of read_file.
@@ -409,8 +497,8 @@ mod tests {
         assert_eq!(tool_path(&json!({"tool_name": "Bash", "tool_input": {"command": "ls"}})), None);
     }
 
-    #[test]
-    fn a_repository_is_found_without_git() {
+    #[tokio::test]
+    async fn a_repository_is_found_without_git() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().canonicalize().unwrap().join("widgets");
         std::fs::create_dir_all(root.join(".git")).unwrap();
@@ -434,19 +522,19 @@ mod tests {
         // Outside any repository: nothing to ask.
         let lone = dir.path().join("lone.txt");
         std::fs::write(&lone, b"x").unwrap();
-        let none = touched(HookEvent::FileOpened, Some(&json!({"tool_input": {"file_path": lone}})), &HookOpts::default()).unwrap();
+        let none = touched(HookEvent::FileOpened, Some(&json!({"tool_input": {"file_path": lone}})), &HookOpts::default()).await.unwrap();
         assert!(none.is_none() || !none.unwrap().subject.contains("widgets"));
     }
 
-    #[test]
-    fn the_request_of_a_file_hook() {
+    #[tokio::test]
+    async fn the_request_of_a_file_hook() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().canonicalize().unwrap().join("widgets");
         std::fs::create_dir_all(root.join(".git")).unwrap();
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::write(root.join("src/a.rs"), b"hello\n").unwrap();
         let input = json!({"hook_event_name": "PostToolUse", "cwd": root, "tool_name": "Edit", "tool_input": {"file_path": "src/a.rs", "old_string": "x", "new_string": "y"}});
-        let asked = touched(HookEvent::FileEdited, Some(&input), &HookOpts::default()).unwrap().unwrap();
+        let asked = touched(HookEvent::FileEdited, Some(&input), &HookOpts::default()).await.unwrap().unwrap();
         assert_eq!(asked.request.subject.as_deref(), Some("repo:widgets"));
         assert_eq!(asked.request.event, FileEvent::Edited);
         // `printf 'hello\n' | git hash-object --stdin`.

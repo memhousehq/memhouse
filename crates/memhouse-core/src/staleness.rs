@@ -109,8 +109,9 @@ pub fn plan(rows: &[RefRow], files: &[FileState], at: DateTime<Utc>) -> Vec<RefU
                     moved_from: moved.then(|| r.code.path.clone()),
                     flagged: !was && is,
                     cleared: was && !is,
-                    // The store fills it in: it depends on the memory's other references.
+                    // The store fills both in: they depend on the memory's other references.
                     stale: is,
+                    was_stale: was,
                 })
             });
             RefUpdate { id: r.id, path: r.code.path.clone(), now: n, change }
@@ -255,6 +256,12 @@ pub fn touched_text(subject: &str, files: &[String], r: &FileTouchedResult) -> S
     out.join("\n")
 }
 
+/// Exactly what a recall would let a reader see at `now`: committed, valid, unexpired, and
+/// inside the reader's tenant, labels, kinds and scope. Staleness is the one filter left open.
+pub(crate) fn recallable_now(m: &Memory, reader: &Decision, now: DateTime<Utc>) -> bool {
+    m.status == MemoryStatus::Committed && reader.visible(m) && m.valid_from <= now && m.valid_to.is_none_or(|t| t > now) && m.expires_at.is_none_or(|t| t > now)
+}
+
 fn unranked(memory: Memory) -> Hit {
     Hit { memory, score: 0.0, keyword_rank: None, vector_rank: None, similarity: None, rerank_score: None, exact: false, working: false, embedding: None, features: None }
 }
@@ -269,30 +276,51 @@ impl Engine {
         let files = observed_files(files)?;
         // The precision every store keeps, so the same observation reads the same in each.
         let at = Utc::now().trunc_subsecs(6);
-        let changes = self.store.code_refs_observe(tenant, subject, &files, at).await?;
-        let mut by_memory: BTreeMap<Uuid, Vec<&RefChange>> = BTreeMap::new();
-        for c in &changes {
-            by_memory.entry(c.id).or_default().push(c);
-        }
-        for (id, of) in &by_memory {
-            // The session cache holds copies of working memory: drop this one, so the next
-            // recall reads its state from the store.
-            self.working.drop_record(*id);
-            let paths = |pick: &dyn Fn(&RefChange) -> bool| -> Vec<serde_json::Value> {
-                of.iter().filter(|c| pick(c)).map(|c| serde_json::json!({ "path": c.path, "moved_from": c.moved_from })).collect()
-            };
-            let stale = of.iter().any(|c| c.stale);
-            for (action, label, picked) in [
-                ("memory.stale", "flagged", paths(&|c| c.flagged)),
-                ("memory.fresh", "cleared", paths(&|c| c.cleared)),
-                ("memory.code_moved", "moved", paths(&|c| c.moved_from.is_some() && !c.flagged && !c.cleared)),
-            ] {
-                if picked.is_empty() {
-                    continue;
-                }
-                metrics::inc("memhouse_code_refs_total", &[("change", label)], picked.len() as f64);
-                self.store.audit(actor, action, tenant, Some(subject), Some(*id), serde_json::json!({ "files": picked, "stale": stale, "why": why })).await?;
+        // One event per memory and kind of change, written by the store in the transaction of
+        // the changes themselves.
+        let events = |changes: &[RefChange]| -> Vec<crate::intake::AuditEntry> {
+            let mut by_memory: BTreeMap<Uuid, Vec<&RefChange>> = BTreeMap::new();
+            for c in changes {
+                by_memory.entry(c.id).or_default().push(c);
             }
+            let mut out = vec![];
+            for (id, of) in &by_memory {
+                let paths = |pick: &dyn Fn(&RefChange) -> bool| -> Vec<serde_json::Value> {
+                    of.iter().filter(|c| pick(c)).map(|c| serde_json::json!({ "path": c.path, "moved_from": c.moved_from })).collect()
+                };
+                let stale = of.iter().any(|c| c.stale);
+                for (action, picked) in [
+                    ("memory.stale", paths(&|c| c.flagged)),
+                    ("memory.fresh", paths(&|c| c.cleared)),
+                    ("memory.code_moved", paths(&|c| c.moved_from.is_some() && !c.flagged && !c.cleared)),
+                ] {
+                    if !picked.is_empty() {
+                        out.push(crate::intake::AuditEntry {
+                            actor: actor.to_string(),
+                            action: action.into(),
+                            subject: Some(subject.to_string()),
+                            memory_id: Some(*id),
+                            detail: serde_json::json!({ "files": picked, "stale": stale, "why": why }),
+                        });
+                    }
+                }
+            }
+            out
+        };
+        let changes = self.store.code_refs_observe(tenant, subject, &files, at, &events).await?;
+        for (label, n) in [
+            ("flagged", changes.iter().filter(|c| c.flagged).count()),
+            ("cleared", changes.iter().filter(|c| c.cleared).count()),
+            ("moved", changes.iter().filter(|c| c.moved_from.is_some() && !c.flagged && !c.cleared).count()),
+        ] {
+            if n > 0 {
+                metrics::inc("memhouse_code_refs_total", &[("change", label)], n as f64);
+            }
+        }
+        // The session cache holds copies of working memory: drop the changed ones, so the next
+        // recall reads their state from the store.
+        for id in changes.iter().map(|c| c.id).collect::<HashSet<_>>() {
+            self.working.drop_record(id);
         }
         Ok(changes)
     }
@@ -309,21 +337,15 @@ impl Engine {
         let all_changes =
             if mark { self.files_observed(&tenant, &subject, &files, &actor, serde_json::json!({ "event": format!("file.{}", req.event.as_str()) })).await? } else { vec![] };
         let paths: Vec<String> = files.iter().map(|f| f.path.clone()).collect();
-        let refs = self.store.code_refs_at(&tenant, &subject, &paths).await?;
+        // A reader whose observation is not recorded moved nothing: the references to a
+        // renamed file are still at the path it had before.
+        let lookup: Vec<String> = if mark { paths.clone() } else { paths_of(&files) };
+        let refs = self.store.code_refs_at(&tenant, &subject, &lookup).await?;
         let mut ids: Vec<Uuid> = refs.iter().map(|(id, _)| *id).chain(all_changes.iter().map(|c| c.id)).collect();
         ids.sort();
         ids.dedup();
         let now = Utc::now();
-        // Exactly what a recall would let this reader see: committed, valid now, and inside the
-        // reader's tenant, labels, kinds and scope. Staleness is the one filter left open here.
-        let recallable = |m: &Memory| {
-            m.status == MemoryStatus::Committed
-                && m.subject == subject
-                && reader.visible(m)
-                && m.valid_from <= now
-                && m.valid_to.is_none_or(|t| t > now)
-                && m.expires_at.is_none_or(|t| t > now)
-        };
+        let recallable = |m: &Memory| m.subject == subject && recallable_now(m, reader, now);
         let seen: HashMap<Uuid, Memory> = self.store.get_many(&tenant, &ids).await?.into_iter().filter(recallable).map(|m| (m.id, m)).collect();
         let mut linked: BTreeMap<Uuid, Vec<CodeRef>> = BTreeMap::new();
         for (id, code) in refs {
@@ -333,7 +355,11 @@ impl Engine {
         }
         let mut result = FileTouchedResult { changes: all_changes.into_iter().filter(|c| seen.contains_key(&c.id)).collect(), ..Default::default() };
         // For a reader whose observation is not recorded: the same comparison, for this answer.
-        let differs = |code: &CodeRef| files.iter().any(|f| f.path == code.path && (f.deleted || f.blob_hash.as_deref().is_some_and(|h| h != code.blob_hash)));
+        let differs = |code: &CodeRef| {
+            files.iter().any(|f| {
+                (f.path == code.path || f.renamed_from.as_deref() == Some(code.path.as_str())) && (f.deleted || f.blob_hash.as_deref().is_some_and(|h| h != code.blob_hash))
+            })
+        };
         for (id, at_paths) in linked {
             let memory = seen[&id].clone();
             if memory.stale_since.is_some() || (!mark && at_paths.iter().any(differs)) {
@@ -419,7 +445,8 @@ impl Engine {
         if before.is_empty() {
             return Err(error::invalid(format!("memory {} has no code references: expected a memory linked to files", m.id)));
         }
-        let todo = revalidated(&before, given.as_deref())?;
+        // Refused before anything is written: a path that is no reference, an empty hash.
+        revalidated(&before, given.as_deref())?;
         if given.is_none() {
             // Nothing was seen of a deleted file: there is no content to confirm the memory against.
             if let Some(gone) = before.iter().find(|r| r.stale_since.is_some() && r.seen_hash.is_none()) {
@@ -429,18 +456,30 @@ impl Engine {
                 )));
             }
         }
-        let after = self.store.code_refs_revalidate(tenant, m.id, given.as_deref()).await?.ok_or_else(|| error::not_found(format!("memory {} not found", m.id)))?;
+        // The event is built from what the store's transaction read and wrote, not from the
+        // read above: an observation may record another hash in between.
+        let written = std::sync::atomic::AtomicUsize::new(0);
+        let event = |was: &[CodeRef], wrote: &[CodeRef], now: &[CodeRef]| -> Vec<crate::intake::AuditEntry> {
+            written.store(wrote.len(), std::sync::atomic::Ordering::Relaxed);
+            let refs: Vec<serde_json::Value> = wrote
+                .iter()
+                .map(|r| {
+                    let old = was.iter().find(|b| b.path == r.path);
+                    serde_json::json!({ "path": r.path, "from": old.map(|b| b.blob_hash.clone()), "to": r.blob_hash, "was_stale": old.is_some_and(|b| b.stale_since.is_some()) })
+                })
+                .collect();
+            vec![crate::intake::AuditEntry {
+                actor: actor.to_string(),
+                action: "memory.revalidate".into(),
+                subject: Some(m.subject.clone()),
+                memory_id: Some(m.id),
+                detail: serde_json::json!({ "refs": refs, "stale": now.iter().any(|r| r.stale_since.is_some()) }),
+            }]
+        };
+        let after = self.store.code_refs_revalidate(tenant, m.id, given.as_deref(), &event).await?.ok_or_else(|| error::not_found(format!("memory {} not found", m.id)))?;
         self.working.drop_record(m.id);
         let stale = after.iter().any(|r| r.stale_since.is_some());
-        let detail = serde_json::json!({
-            "refs": todo.iter().map(|r| {
-                let old = before.iter().find(|b| b.path == r.path);
-                serde_json::json!({ "path": r.path, "from": old.map(|b| b.blob_hash.clone()), "to": r.blob_hash, "was_stale": old.is_some_and(|b| b.stale_since.is_some()) })
-            }).collect::<Vec<_>>(),
-            "stale": stale,
-        });
-        metrics::inc("memhouse_code_refs_total", &[("change", "revalidated")], todo.len() as f64);
-        self.store.audit(actor, "memory.revalidate", tenant, Some(&m.subject), Some(m.id), detail).await?;
+        metrics::inc("memhouse_code_refs_total", &[("change", "revalidated")], written.load(std::sync::atomic::Ordering::Relaxed) as f64);
         Ok(RevalidateResult { id: m.id, code_refs: after, stale })
     }
 }

@@ -19,6 +19,9 @@ pub(crate) struct Reader<'a> {
     pub scope: &'a Scope,
     pub denied_labels: &'a [String],
     pub shared_agents: &'a [String],
+    /// Also preferences with a stale code reference (TPL-04). Without it a stale preference
+    /// applies nowhere: it is not returned and overrides none at a broader scope.
+    pub include_stale: bool,
 }
 
 /// The preferences that apply, from every preference the reader may see: per key the one at the
@@ -98,6 +101,7 @@ impl Engine {
             denied_labels: reader.denied_labels.to_vec(),
             scope: reader.scope.clone(),
             shared_agents: reader.shared_agents.to_vec(),
+            fresh_only: !reader.include_stale,
             ..Default::default()
         };
         let now = Utc::now();
@@ -126,7 +130,7 @@ impl Engine {
         let tenant = self.tenant(&tenant);
         let policy = self.policy_for(&tenant).await?;
         let denied = crate::engine::with_policy_labels(&self.cfg.governance.denied_labels, &policy);
-        self.effective_preferences(&tenant, subject, key, &Reader { scope, denied_labels: &denied, shared_agents: &[] }).await
+        self.effective_preferences(&tenant, subject, key, &Reader { scope, denied_labels: &denied, shared_agents: &[], include_stale: false }).await
     }
 }
 

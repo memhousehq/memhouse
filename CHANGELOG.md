@@ -81,8 +81,9 @@ path from 0.x data other than export and import.
   revised or forgotten. `POST /v1/code/touched` returns the memories linked to files an agent
   opened or edited, under the access decision of a recall, with those needing revalidation
   listed apart; `POST /v1/code/changed` reports a commit's files. `memhouse hook file-opened |
-  file-edited | post-commit` are the adapters harnesses and git run: they compute the git blob
-  hash in process, only call the API and never block a read, an edit or a commit;
+  file-edited | post-commit` are the adapters harnesses and git run: they take the file's git
+  blob hash (from git when it is installed), only call the API and never block a read, an edit
+  or a commit;
   `memhouse connect claude-code --hooks` and `gemini --hooks` install them without touching
   other hooks, `memhouse hook install-git` the post-commit hook, and `memhouse remember
   --file` links a memory from the command line. MCP: `file_memories` and `revalidate`, and

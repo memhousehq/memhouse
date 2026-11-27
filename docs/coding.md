@@ -55,7 +55,8 @@ memhouse hook install-git --agent claude-code     # optional: report every commi
 
 `connect <agent> --hooks` does three things: it connects the agent over MCP as before (its own
 principal `agent:<name>` and key), writes the key to a file only you can read
-(`$MEMHOUSE_HOME/hook-keys/<agent>.key`, mode 600), and merges the two file hooks into the
+(`$MEMHOUSE_HOME/hook-keys/<agent>.key`, mode 600; a deployment named with another `--config`
+gets a file of its own, `<agent>-<8 hex digits>.key`), and merges the two file hooks into the
 harness's settings file. Hooks you already have there are kept; running it again replaces only
 its own entries, and a backup of the file is left beside it. `--project` writes the project's
 file instead of yours (`.claude/settings.local.json`, `.gemini/settings.json`), and `--print`
@@ -78,10 +79,13 @@ curl -s $MH/v1/remember -H "authorization: Bearer $KEY" -H 'content-type: applic
 ```
 
 A path is relative to the repository root, with `/` separators. The hash is the **git blob
-hash** of the file's content, what `git hash-object <file>` prints. MemHouse computes it in
-process (`blob <length>\0` plus the bytes, SHA-1, or SHA-256 in a repository created with
-`--object-format=sha256`), so the hooks need no git binary and work on files that are not
-committed yet. The server never reads your files: it compares the hashes it is given.
+hash** of the file's content, what `git hash-object <file>` prints, also for a file that is
+not committed yet. The file hooks ask git for it when git is installed, so that the hash is
+the one a commit of the file records (git may store other bytes than the working tree holds:
+line endings under `core.autocrlf`, clean filters such as Git LFS). Without a git binary they
+compute it themselves (`blob <length>\0` plus the bytes on disk, SHA-1, or SHA-256 in a
+repository created with `--object-format=sha256`), which is the same hash wherever git stores
+the file as it is. The server never reads your files: it compares the hashes it is given.
 
 ## Staleness
 
@@ -126,7 +130,10 @@ curl -s $MH/v1/code/revalidate -H "authorization: Bearer $KEY" -H 'content-type:
 # {"id":"01a2…","code_refs":[{"path":"src/ledger.rs","blob_hash":"9f2c5c1e…"}],"stale":false}
 ```
 
-Without `code_refs`, each stale reference takes the hash its file was last seen with. A memory
+Without `code_refs`, each stale reference takes the hash its file was **last seen** with, which
+is the file you checked only if nothing changed it since the hook reported it. To be exact,
+pass `code_refs` with the hash of each file as you checked it (`git hash-object <file>`): only
+those references are revalidated, and the memory returns to recall once none is stale. A memory
 about a **deleted** file has nothing to be checked against: revalidation answers `400`, and the
 memory is revised with the file it is about now, or forgotten. Revalidation needs
 `memory:write` and sight of the memory, and is audited as `memory.revalidate` with the old and
@@ -289,11 +296,20 @@ words are added.
 - **Staleness is what MemHouse is told.** A file changed where no hook runs (another machine
   without the post-commit hook, an editor outside the harness) is noticed when the file is
   next opened through a hook or one of its commits is reported, not before.
-- **The hash is of the file's bytes on disk.** Where git stores other bytes than the working
-  tree holds (line-ending conversion with `core.autocrlf`, clean and smudge filters such as
-  Git LFS), the hash a file hook computes differs from the blob hash the post-commit hook gets
-  from git, and memories about such files are flagged after every commit. Use one of the two
-  kinds of hook for such files, or normalize line endings in the working tree.
+- **Without a git binary the hash is of the file's bytes on disk.** Where git stores other
+  bytes than the working tree holds (line-ending conversion, clean filters), that hash differs
+  from the blob hash a commit records, and memories about such files would be flagged after
+  every commit. With git installed the file hooks ask git, and the two agree.
+- **Observations are applied in the order they arrive.** If a file is edited again between a
+  commit and that commit's post-commit report, and the file hook's report of the edit arrives
+  first, the late commit report (which carries the committed content) can clear the flag the
+  edit set. The next time the file is opened or edited through a hook it is flagged again.
+- **A revision is judged against the content its file was last seen with.** A revision whose
+  `code_refs` name another hash than the last one reported for the file starts stale, until a
+  hook reports the file with that hash (or it is revalidated).
+- **Hook groups are recognised by their program.** `connect --hooks` replaces the groups whose
+  commands run a binary called `memhouse` with `hook file-opened` or `hook file-edited`, and
+  leaves every other group alone, also one of another program with the same words.
 - **Any writer can report a hash.** A key with `memory:write` in the repository's subject can
   hold a memory back by reporting another hash, or bring a stale one back by reporting the
   stored hash or revalidating it. An agent's key has that permission (it needs it to propose

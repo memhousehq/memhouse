@@ -1926,7 +1926,7 @@ actions of uv and pnpm. The job now installs both at fixed versions with `pipx` 
   (`memhouse_core::staleness::plan`): another hash or a deletion makes a reference stale, the
   stored hash seen again clears it, a rename moves it and it is stale only if the content
   changed. Store methods `code_refs_observe`, `code_refs_at`, `code_refs_revalidate`, with
-  three checks added to the store kit (15 to 18). Staleness travels with a record: Memory
+  three checks added to the store kit (15 to 18; 19 with the fix below). Staleness travels with a record: Memory
   Format gained `stale_since` and `seen_hash` on a code reference (from schema 10, an
   addition within format version 2, with a vector), so export, import and `memhouse migrate`
   keep it. See [schema.md](schema.md#code-reference).
@@ -1942,8 +1942,9 @@ actions of uv and pnpm. The job now installs both at fixed versions with `pipx` 
   `memory.code_moved`, `memory.revalidate`. MCP: `file_memories`, `revalidate`, `code_refs` on
   `remember` and `revise`. See [api.md](api.md#code).
 - **Hooks (TR-TPL-03).** `memhouse hook file-opened | file-edited | post-commit` read the
-  harness's hook input, compute the git blob hash in process (no git binary for the file
-  hooks), call the API over HTTP or in process, and print the memories as
+  harness's hook input, take the file's git blob hash (from git when it is installed, since
+  the review fixes below; computed in process without a git binary), call the API over HTTP
+  or in process, and print the memories as
   `hookSpecificOutput.additionalContext`. They hold no rule of their own and exit 0 whatever
   happens. Installers for Claude Code (`PostToolUse`) and Gemini CLI (`AfterTool`), formats as
   documented on 27 November 2026, and for git's `post-commit`. An integration test runs the
@@ -1967,7 +1968,7 @@ actions of uv and pnpm. The job now installs both at fixed versions with `pipx` 
   open, 50 on edit), 620 of 620 linked, non-stale memories returned, 100 cases exact. The
   same numbers on Postgres and on SQLite.
 - **Governance.** 79 checks. Postgres: 79 of 79. SQLite: 76 of 76 applicable, 3 not applicable. The
-  store kit passes its 18 checks on both.
+  store kit passes its 18 checks on both (19 with the fix below).
 - **Guard.** T1 with the coding suite, run with `MEMHOUSE_CI_SKIP_LATENCY=1` on a loaded
   machine: passed, every quality metric equal to its baseline; no paid spend. Timings,
   reported and not gated, in two such runs: SQL search p50 13.3 and 13.7 ms on LongMemEval_S
@@ -2009,10 +2010,11 @@ actions of uv and pnpm. The job now installs both at fixed versions with `pipx` 
     outside the benchmark. Why the filter made the slow choice more frequent was not
     established. The latency baselines were not changed and should be measured again on a
     quiet machine.
-  - The post-commit hook's hashes are git's; the file hooks hash the bytes on disk. Where they
-    differ (line-ending conversion, filters), memories are flagged after each commit
-    ([coding.md](coding.md#limits)). `GET /v1/subjects/{subject}/preferences` is not filtered by
-    staleness.
+  - ~~The post-commit hook's hashes are git's; the file hooks hash the bytes on disk. Where they
+    differ (line-ending conversion, filters), memories are flagged after each commit.
+    `GET /v1/subjects/{subject}/preferences` is not filtered by staleness.~~ Both changed
+    with the review fixes below: the file hooks ask git for the hash, and effective
+    preferences leave stale records out.
 
 **Fix (2026-11-27, flaky `procedural_promotion` on Postgres):** in one guard run the scenario
 "a correction recognised by its wording" ended with the held record still a candidate after
@@ -2027,6 +2029,57 @@ candidate, else any other, the oldest first. The store kit checks it
 gives the state after the third write and what that write answered. The same lookup also made
 an ordinary identical write answer with a rejected duplicate's id and state instead of the
 live record's, when both existed.
+
+**Review fixes (2026-11-27, pull request 39):** the first review round, each finding checked
+against the code; what changed:
+
+- **Staleness is written as one unit.** `code_refs_observe` and `code_refs_revalidate` take
+  the caller's audit events and write them in the transaction that changes the references
+  (before: after it, so a failure between the two left a change without its event). The
+  Postgres store locks the records in id order before their references, so two reports about
+  the same files cannot deadlock. A rename into a path that another reference of the same
+  memory holds, and a chain of renames in one report, no longer collide on the key. The
+  revalidation event is built from the hashes the transaction wrote. Store kit: the observe
+  check covers these (19 checks, no new name).
+- **What a report answers.** A change carries `was_stale` beside `stale`; `flagged` and
+  `cleared` of `POST /v1/code/changed` count the memories whose staleness changed, and only
+  memories a recall could give the caller now are named (valid, unexpired). A read-only
+  caller's `touched` follows a rename (`renamed_from`) without storing anything.
+- **Stale records are left out everywhere a default recall reads.** The working-memory
+  fallback and the effective preferences ask the store for non-stale records (`fresh_only`),
+  so stale notes no longer fill the fallback's limit and a stale narrow preference no longer
+  shadows a live broad one. `GET /v1/subjects/{subject}/preferences` is therefore filtered
+  too.
+- **Task-matched procedures.** Request paths are normalized like stored ones; a procedure
+  returned for another reason is not also listed as excluded; and when off-task procedures
+  are dropped, recall searches once more without procedures so the dropped places are filled
+  (one more store search, only on a recall that dropped one).
+- **Promotion.** A write the statement gate holds as a plan or speculation is never counted
+  as a correction.
+- **A revision that names its own `code_refs`** is judged when it takes effect: a reference
+  whose hash is not the one its file was last seen with starts stale. This is a rule applied
+  after the supersession, not inside its transaction, and a candidate revision admitted
+  later by a reviewer is not judged; the next report of the file settles either.
+- **Hooks.** The file hooks ask `git hash-object` for the hash when git is installed, so it
+  is the hash a commit records (line endings, clean filters); without git they hash the
+  bytes on disk, reading no more than the size limit. Reading the hook input and running git
+  are under the hook's deadline (a harness that keeps stdin open no longer holds the hook).
+  The post-commit hook reports every batch and names the ones refused, instead of stopping
+  at the first. `connect --hooks` recognises its groups by the program's name, not by words
+  in the command; a key file is named per deployment when `--config` names another one;
+  `install-git` writes an absolute key-file path.
+- **Evaluation.** The regression gate compares file-touched recall and stale memories
+  withheld (`max_f1_drop`); a `touch` question about a file that does not exist at that
+  point fails the replay instead of being skipped.
+- **Descriptions.** The `revalidate` tool, the template guidance and the API reference say
+  to pass the hashes actually checked and what a partial revalidation leaves; the `remember`
+  tool and the admission table state when a correction is promoted.
+- **Not changed:** a commit report that arrives after a later edit's report can clear the
+  edit's flag until the file is touched again. Ordering observations needs a time per
+  reference from the reporter, a schema change left for a later goal; it is listed in
+  [coding.md](coding.md#limits).
+- Governance: 79 checks; the new cases are scenarios of `stale_until_revalidated` (25),
+  `file_touched_access` (14), `procedural_promotion` (22) and `hooks_only_call_api` (9).
 
 #### G20 — Memory browser v2 and admin console
 

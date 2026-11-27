@@ -322,7 +322,7 @@ max_contamination_rise = 1.0
 | Key | Default | Meaning |
 |---|---|---|
 | `gate` | true | run the regression gate before a policy is approved, for tenants that have suites (`memhouse eval add`); `false` approves without replaying them |
-| `max_f1_drop` | 2.0 | points storage F1 or retrieval F1 may fall by on a suite (QUAL-05) |
+| `max_f1_drop` | 2.0 | points storage F1 or retrieval F1 may fall by on a suite (QUAL-05); for a suite with code, also file-touched recall and the share of stale memories withheld |
 | `max_stale_rise` | 1.0 | points the stale-fact rate may rise by |
 | `max_contamination_rise` | 1.0 | points the contamination rate (plans and guesses committed as facts) may rise by |
 

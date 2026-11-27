@@ -87,6 +87,11 @@ async fn the_hooks_of_two_harnesses_and_git() {
     let has_git = git(&repo, &["init", "-q"]).is_some();
     if !has_git {
         std::fs::create_dir_all(repo.join(".git")).unwrap();
+    } else {
+        // The fixture's own hooks directory, whatever `core.hooksPath` the user's git
+        // configuration names: the installer writes here, and the fixture's commits run no
+        // hook of the user's.
+        git(&repo, &["config", "core.hooksPath", &repo.join(".git/hooks").display().to_string()]).unwrap();
     }
     let file = repo.join("src/ledger.rs");
     std::fs::write(&file, "pub struct Ledger;\n").unwrap();
@@ -169,6 +174,36 @@ async fn the_hooks_of_two_harnesses_and_git() {
     let out = hook(&home, &["hook", "file-opened", "--url", &url], Some(&claude));
     assert_eq!((out.status.code(), text(&out).0.as_str()), (Some(0), ""));
     assert!(text(&out).1.contains("no API key"));
+    // A harness that never closes the hook's stdin: the hook gives up at its deadline, adds
+    // nothing and exits 0.
+    let mut held = Command::new(env!("CARGO_BIN_EXE_memhouse"))
+        .args(["hook", "file-opened", "--url", &url, "--key-file", &key_file, "--timeout-ms", "700"])
+        .env("MEMHOUSE_HOME", &home)
+        .env_remove("MEMHOUSE_CONFIG")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let open_pipe = held.stdin.take().unwrap();
+    let started = std::time::Instant::now();
+    let status = loop {
+        if let Some(status) = held.try_wait().unwrap() {
+            break Some(status);
+        }
+        if started.elapsed() > std::time::Duration::from_secs(20) {
+            break None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    if status.is_none() {
+        held.kill().unwrap();
+    }
+    drop(open_pipe);
+    let out = held.wait_with_output().unwrap();
+    assert!(status.is_some_and(|s| s.code() == Some(0)), "the hook was still waiting for stdin after 20 s");
+    assert!(text(&out).0.is_empty() && text(&out).1.contains("no answer within 700 ms"), "{:?}", text(&out));
+
     // Input that is not what any harness sends: nothing happens, and nothing fails.
     let out = hook(&home, &["hook", "file-edited", "--url", &url, "--key-file", &key_file], Some(&json!(["not", "an", "object"])));
     assert_eq!((out.status.code(), text(&out).0.as_str()), (Some(0), ""));
@@ -198,11 +233,42 @@ async fn the_hooks_of_two_harnesses_and_git() {
     let refs = engine.store.representations(&engine.cfg.memory.tenant, stored.id).await.unwrap().1;
     assert_eq!((refs.len(), refs[0].path.as_str(), refs[0].stale_since.is_some()), (1, "src/book.rs", true), "{refs:?}");
 
-    // The installer writes the hook once, and leaves a hook that is not its own alone.
-    let out = hook(&home, &["hook", "install-git", "--repo", &repo.display().to_string(), "--key-file", &key_file], None);
+    // A file git stores with other bytes than the working tree holds (line endings converted
+    // on commit): the file hook asks git for the hash, so an unchanged file is not flagged.
+    git(&repo, &["config", "core.autocrlf", "true"]).unwrap();
+    std::fs::write(repo.join("src/notes.txt"), "first line\r\nsecond line\r\n").unwrap();
+    let stored_as = git(&repo, &["hash-object", "src/notes.txt"]).unwrap();
+    assert_ne!(stored_as, memhouse_core::staleness::git_blob_hash(b"first line\r\nsecond line\r\n", Default::default()), "git converts this file");
+    let note = engine
+        .remember(RememberRequest {
+            subject: Some("repo:widgets".into()),
+            content: "The notes file lists the release steps in order.".into(),
+            code_refs: vec![CodeRef::new("src/notes.txt", &stored_as)],
+            wait: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let opened = json!({ "hook_event_name": "PostToolUse", "cwd": repo, "tool_name": "Read", "tool_input": { "file_path": repo.join("src/notes.txt") } });
+    let out = hook(&home, &["hook", "file-opened", "--url", &url, "--key-file", &key_file], Some(&opened));
+    let (stdout, stderr) = text(&out);
+    assert!(stdout.contains("release steps") && !stdout.contains("earlier version"), "{stdout} / {stderr}");
+    assert!(engine.store.get(&engine.cfg.memory.tenant, note.id).await.unwrap().unwrap().stale_since.is_none());
+
+    // The installer writes the hook once, and leaves a hook that is not its own alone. A key
+    // file named relative to where the installer runs is written as an absolute path: git
+    // runs the hook from the repository.
+    let out = Command::new(env!("CARGO_BIN_EXE_memhouse"))
+        .args(["hook", "install-git", "--repo", &repo.display().to_string(), "--key-file", "agent.key"])
+        .current_dir(&home)
+        .env("MEMHOUSE_HOME", &home)
+        .env_remove("MEMHOUSE_CONFIG")
+        .output()
+        .unwrap();
     assert!(out.status.success(), "{}", text(&out).1);
     let installed = std::fs::read_to_string(repo.join(".git/hooks/post-commit")).unwrap();
     assert!(installed.contains("hook post-commit") && installed.contains("|| true") && !installed.contains(KEY), "{installed}");
+    assert!(installed.contains(&format!("--key-file {key_file}")), "the key file is not absolute in the hook: {installed}");
     std::fs::write(repo.join(".git/hooks/post-commit"), "#!/bin/sh\necho mine\n").unwrap();
     let out = hook(&home, &["hook", "install-git", "--repo", &repo.display().to_string(), "--key-file", &key_file], None);
     assert!(out.status.success() && text(&out).0.contains("left as it is"));

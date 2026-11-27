@@ -136,24 +136,30 @@ async fn transport(cfg_path: &Option<PathBuf>, reach: &Reach) -> anyhow::Result<
 }
 
 /// The harness's hook input: one JSON object on stdin. Nothing is read from a terminal.
-fn stdin_json() -> Option<Value> {
+///
+/// Read on a thread of its own: a harness that never closes the pipe must not hold the hook
+/// past its deadline. A read is not something the deadline's timer can interrupt, so the
+/// waiting is done here, on a channel, and the thread is left behind when the time is up (the
+/// process ends without waiting for it).
+async fn stdin_json() -> Option<Value> {
     if std::io::stdin().is_terminal() {
         return None;
     }
-    let mut text = String::new();
-    std::io::stdin().read_to_string(&mut text).ok()?;
-    serde_json::from_str(text.trim()).ok()
+    let (done, read) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || {
+        let mut text = String::new();
+        let _ = done.send(std::io::stdin().read_to_string(&mut text).ok().map(|_| text));
+    });
+    serde_json::from_str(read.await.ok()??.trim()).ok()
 }
 
 async fn file_hook(cfg_path: &Option<PathBuf>, event: HookEvent, a: &FileArgs, format: Format) -> anyhow::Result<String> {
-    let input = if a.paths.is_empty() { stdin_json() } else { None };
+    let input = if a.paths.is_empty() { stdin_json().await } else { None };
     let opts = HookOpts { subject: a.subject.clone(), paths: a.paths.clone(), query: a.query.clone(), cwd: None };
     // Before anything is opened: most tool calls are about no file of a repository.
-    if hook::touched(event, input.as_ref(), &opts)?.is_none() {
-        return Ok(format.nothing().to_string());
-    }
+    let Some(asked) = hook::touched(event, input.as_ref(), &opts).await? else { return Ok(format.nothing().to_string()) };
     let api = transport(cfg_path, &a.reach).await?;
-    hook::run_touched(api.as_ref(), event, input.as_ref(), &opts, format).await
+    hook::run_asked(api.as_ref(), &asked, format).await
 }
 
 /// Run a hook command. The three hooks always succeed (fail open): what went wrong is one
@@ -199,15 +205,24 @@ async fn within(ms: u64, work: impl std::future::Future<Output = anyhow::Result<
     }
 }
 
-/// Where `memhouse connect <agent> --hooks` keeps the key its hooks read.
-pub fn key_file_of(agent: &str) -> PathBuf {
-    memhouse_core::config::home_dir().join("hook-keys").join(format!("{agent}.key"))
+/// Where `memhouse connect <agent> --hooks` keeps the key its hooks read: one file per agent
+/// and deployment. The installation's own configuration (`config.toml` under `MEMHOUSE_HOME`)
+/// has `<agent>.key`; a deployment named by another configuration file has a file of its own,
+/// named after that path, so connecting it does not replace the key the first one's hooks read.
+pub fn key_file_of(cfg_path: &Option<PathBuf>, agent: &str) -> PathBuf {
+    let canonical = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let own = canonical(&memhouse_core::config::home_dir().join("config.toml"));
+    let name = match cfg_path.as_deref().map(canonical).filter(|p| *p != own) {
+        Some(other) => format!("{agent}-{}.key", &memhouse_core::engine::content_hash(&other.to_string_lossy())[..8]),
+        None => format!("{agent}.key"),
+    };
+    memhouse_core::config::home_dir().join("hook-keys").join(name)
 }
 
 /// Write a key for the hooks to read: a file of the user's alone, in a directory of the
 /// user's alone. The key is never put on a command line, where other processes could read it.
-pub fn write_key_file(agent: &str, key: &str) -> anyhow::Result<PathBuf> {
-    let file = key_file_of(agent);
+pub fn write_key_file(cfg_path: &Option<PathBuf>, agent: &str, key: &str) -> anyhow::Result<PathBuf> {
+    let file = key_file_of(cfg_path, agent);
     let dir = file.parent().expect("has a parent");
     std::fs::create_dir_all(dir)?;
     let mut open = std::fs::OpenOptions::new();
@@ -274,11 +289,26 @@ pub fn gemini_entries(opened: &str, edited: &str) -> Vec<(&'static str, Value)> 
     vec![("AfterTool", entry("read_file", "memhouse-file-opened", opened)), ("AfterTool", entry("write_file|replace", "memhouse-file-edited", edited))]
 }
 
-/// Whether a hook group of a settings file is one this command wrote: every handler in it
-/// runs `memhouse ... hook file-opened|file-edited`.
+/// Whether a command line is one of MemHouse's file hooks: its program is a binary called
+/// `memhouse` (whatever directory it is in, quoted or not) and it runs `hook file-opened` or
+/// `hook file-edited`. Another program's command with the same words (`mytool hook
+/// file-opened`) is not.
+fn our_command(command: &str) -> bool {
+    let c = command.trim_start();
+    let program = match c.chars().next() {
+        Some(q @ ('\'' | '"')) => c[1..].split(q).next().unwrap_or_default(),
+        _ => c.split_whitespace().next().unwrap_or_default(),
+    };
+    let name = program.rsplit(['/', '\\']).next().unwrap_or_default();
+    let rest = &c[program.len().min(c.len())..];
+    matches!(name, "memhouse" | "memhouse.exe") && (rest.contains(" hook file-opened") || rest.contains(" hook file-edited"))
+}
+
+/// Whether a hook group of a settings file is one this command wrote: every handler in it is
+/// a MemHouse file hook ([`our_command`]). A group with anything else in it is the user's.
 fn ours(group: &Value) -> bool {
     let handlers = group["hooks"].as_array().cloned().unwrap_or_default();
-    !handlers.is_empty() && handlers.iter().all(|h| h["command"].as_str().is_some_and(|c| c.contains(" hook file-opened") || c.contains(" hook file-edited")))
+    !handlers.is_empty() && handlers.iter().all(|h| h["command"].as_str().is_some_and(our_command))
 }
 
 /// Merge hook groups into a settings document: groups this command wrote earlier are
@@ -340,10 +370,12 @@ const GIT_MARKER: &str = "# memhouse post-commit hook";
 fn install_git(cfg_path: &Option<PathBuf>, repo: Option<&Path>, subject: Option<&str>, key_file: Option<&Path>, agent: &str, print: bool) -> anyhow::Result<()> {
     let dir = repo.map(Path::to_path_buf).unwrap_or(std::env::current_dir()?);
     let found = hook::find_repo(&dir).ok_or_else(|| anyhow::anyhow!("{} is not in a git repository", dir.display()))?;
-    let key_file = key_file.map(Path::to_path_buf).unwrap_or_else(|| key_file_of(agent));
+    let key_file = key_file.map(Path::to_path_buf).unwrap_or_else(|| key_file_of(cfg_path, agent));
     if !key_file.exists() && !print {
         anyhow::bail!("no key file at {}: run `memhouse connect <agent> --hooks` first and name that agent with --agent, or give --key-file", key_file.display());
     }
+    // The hook runs from the repository, not from here: a relative path is made absolute now.
+    let key_file = std::fs::canonicalize(&key_file).or_else(|_| std::path::absolute(&key_file)).unwrap_or(key_file);
     let line = format!("{} || true", command_line(cfg_path, "post-commit", None, &key_file, subject)?);
     let script = format!("#!/bin/sh\n{GIT_MARKER} (written by `memhouse hook install-git`).\n# Reports the commit's files to MemHouse; it never fails the commit.\n{line}\n");
     // Where git looks for hooks: `core.hooksPath` when set, else the repository's own directory
@@ -399,16 +431,21 @@ mod tests {
                 "Stop": [{"hooks": [{"type": "command", "command": "./done.sh"}]}]
             }
         });
+        // Another program's hook with the same words is the user's, and stays.
+        root["hooks"]["PostToolUse"].as_array_mut().unwrap().push(json!({"matcher": "Read", "hooks": [{"type": "command", "command": "mytool hook file-opened --all"}]}));
+        assert!(our_command("'/opt/my tools/memhouse' --config /c hook file-opened --key-file /k") && our_command("C:\\bin\\memhouse.exe hook file-edited"));
+        assert!(!our_command("mytool hook file-opened") && !our_command("/bin/memhouse-wrapper hook file-opened") && !our_command("/bin/memhouse mcp"));
         let entries = claude_code_entries("/bin/memhouse hook file-opened --format claude-code --key-file /k", "/bin/memhouse hook file-edited --format claude-code --key-file /k");
         merge_hooks(&mut root, &entries).unwrap();
         let again = root.clone();
         // A second run replaces its own groups and nothing else.
         merge_hooks(&mut root, &claude_code_entries("/bin/memhouse hook file-opened --key-file /other", "/bin/memhouse hook file-edited --key-file /other")).unwrap();
         let post = root["hooks"]["PostToolUse"].as_array().unwrap();
-        assert_eq!(post.len(), 3, "{root}");
+        assert_eq!(post.len(), 4, "{root}");
         assert_eq!(post[0]["hooks"][0]["command"], "./lint.sh");
-        assert_eq!((post[1]["matcher"].as_str(), post[2]["matcher"].as_str()), (Some("Read"), Some("Edit|Write|MultiEdit|NotebookEdit")));
-        assert!(post[1]["hooks"][0]["command"].as_str().unwrap().contains("/other"));
+        assert_eq!(post[1]["hooks"][0]["command"], "mytool hook file-opened --all");
+        assert_eq!((post[2]["matcher"].as_str(), post[3]["matcher"].as_str()), (Some("Read"), Some("Edit|Write|MultiEdit|NotebookEdit")));
+        assert!(post[2]["hooks"][0]["command"].as_str().unwrap().contains("/other"));
         assert_eq!(root["hooks"]["Stop"], again["hooks"]["Stop"]);
         assert_eq!(root["permissions"], again["permissions"]);
         // A settings file whose hooks are not what the format says is refused, not rewritten.

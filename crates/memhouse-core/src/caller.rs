@@ -296,7 +296,7 @@ impl Caller {
         a.scope = session.map(|s| Scope { session: Some(s), ..Default::default() });
         let mut d = self.decide(&a).await?;
         self.with_grants(&mut d, subject).await?;
-        let reader = crate::preference::Reader { scope: &d.scope, denied_labels: &d.denied_labels, shared_agents: &d.shared_agents };
+        let reader = crate::preference::Reader { scope: &d.scope, denied_labels: &d.denied_labels, shared_agents: &d.shared_agents, include_stale: false };
         self.engine.effective_preferences(&d.tenant, subject, key, &reader).await
     }
 
@@ -430,12 +430,16 @@ impl Caller {
         let mut ids: Vec<Uuid> = changes.iter().map(|c| c.id).collect();
         ids.sort();
         ids.dedup();
-        // What a recall could give this caller: a candidate or a quarantined record is not named.
+        // What a recall could give this caller now: a candidate, a quarantined record, or one
+        // outside its validity window or past its expiry is not named.
+        let now = chrono::Utc::now();
         let seen: std::collections::HashSet<Uuid> =
-            self.engine.store.get_many(&d.tenant, &ids).await?.into_iter().filter(|m| m.status == MemoryStatus::Committed && read.visible(m)).map(|m| m.id).collect();
+            self.engine.store.get_many(&d.tenant, &ids).await?.into_iter().filter(|m| crate::staleness::recallable_now(m, &read, now)).map(|m| m.id).collect();
         let changes: Vec<RefChange> = changes.into_iter().filter(|c| seen.contains(&c.id)).collect();
+        // Counted per memory, by its state before and after the request: a memory that was
+        // stale already did not become stale because another of its files changed too.
         let count = |pick: &dyn Fn(&RefChange) -> bool| changes.iter().filter(|c| pick(c)).map(|c| c.id).collect::<std::collections::HashSet<_>>().len() as u64;
-        Ok(FilesChangedResult { flagged: count(&|c| c.flagged), cleared: count(&|c| c.cleared && !c.stale), changes })
+        Ok(FilesChangedResult { flagged: count(&|c| !c.was_stale && c.stale), cleared: count(&|c| c.was_stale && !c.stale), changes })
     }
 
     /// Confirm that a memory still holds for its files as they are now (TPL-04). The caller
@@ -499,6 +503,7 @@ impl Caller {
             session: None,
             tags: None,
             live_at: None,
+            fresh_only: false,
         };
         self.engine.store.list(&q).await
     }

@@ -532,7 +532,8 @@ impl GateReport {
 /// Compare two replays of the same suite (QUAL-05): storage and retrieval F1 may not fall by more
 /// than `max_f1_drop` points, the stale-fact rate may not rise by more than `max_stale_rise`
 /// points, nor the contamination rate by more than `max_contamination_rise`. A metric the suite
-/// can't measure is left out.
+/// can't measure is left out. For a suite with code, file-touched recall and the share of stale
+/// memories withheld may not fall by more than `max_f1_drop` points either.
 pub fn compare(suite: &str, before: &EvalMetrics, after: &EvalMetrics, limits: &GateLimits) -> Vec<GateFinding> {
     let mut out = vec![];
     let mut check = |metric: &str, b: Option<f64>, a: Option<f64>, limit: f64, higher_is_better: bool| {
@@ -547,6 +548,10 @@ pub fn compare(suite: &str, before: &EvalMetrics, after: &EvalMetrics, limits: &
     check("retrieval_f1", before.retrieval_f1, after.retrieval_f1, limits.max_f1_drop, true);
     check("stale_rate", before.stale_rate, after.stale_rate, limits.max_stale_rise, false);
     check("contamination_rate", before.contamination_rate, after.contamination_rate, limits.max_contamination_rise, false);
+    // Suites with code (format 2): both are shares that must not fall, held to the same limit
+    // as the F1 scores. A suite without code measures neither, and neither is compared.
+    check("touched_recall", before.touched_recall, after.touched_recall, limits.max_f1_drop, true);
+    check("stale_withheld", before.stale_withheld, after.stale_withheld, limits.max_f1_drop, true);
     out
 }
 
@@ -1003,7 +1008,20 @@ impl Engine {
                 // A file-touched question (TPL-05): the agent opens the file, with its content
                 // as it is now. Asked only of a replay that wrote the file links.
                 if let Some(path) = &q.touch {
-                    let Some(file) = repo.get(path).filter(|_| mode == ReplayMode::Remember) else { continue };
+                    if mode != ReplayMode::Remember {
+                        continue;
+                    }
+                    // A question about a file the conversation never linked, or one it deleted
+                    // or renamed away, tests nothing: the suite is wrong, and says so here
+                    // instead of being scored without the checkpoint.
+                    let file = repo.get(path).ok_or_else(|| {
+                        crate::error::invalid(format!(
+                            "suite conversation {}, session {}: the question '{}' touches '{path}', which is not a file of the conversation's repository at that point (never linked by a turn's `files`, or deleted or renamed before)",
+                            c.id,
+                            n + 1,
+                            q.q
+                        ))
+                    })?;
                     let t = self
                         .file_touched(FileTouchedRequest {
                             tenant: Some(tenant.into()),
@@ -1292,5 +1310,11 @@ mod tests {
         );
         // A metric one side can't measure is left out.
         assert_eq!(compare("s", &before, &EvalMetrics::default(), &limits).len(), 0);
+        // A suite with code: its two shares are compared too, and a fall of either fails.
+        let code = EvalMetrics { touched_recall: Some(1.0), stale_withheld: Some(1.0), ..before };
+        assert!(compare("s", &code, &code, &limits).len() == 6);
+        let fell = compare("s", &code, &EvalMetrics { touched_recall: Some(0.0), stale_withheld: Some(0.97), ..code }, &limits);
+        let failed: Vec<&str> = fell.iter().filter(|x| !x.passed).map(|x| x.metric.as_str()).collect();
+        assert_eq!(failed, ["touched_recall", "stale_withheld"]);
     }
 }

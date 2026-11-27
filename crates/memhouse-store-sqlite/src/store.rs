@@ -495,6 +495,7 @@ impl Store for SqliteStore {
              AND (?16 IS NULL OR m.scope_session = ?16) \
              AND (?18 IS NULL OR EXISTS (SELECT 1 FROM json_each(m.tags) t WHERE t.value IN (SELECT value FROM json_each(?18)))) \
              AND (?19 IS NULL OR (m.valid_from <= ?19 AND (m.valid_to IS NULL OR m.valid_to > ?19) AND (m.expires_at IS NULL OR m.expires_at > ?19))) \
+             AND (NOT ?20 OR m.stale_since IS NULL) \
              ORDER BY m.created_at DESC, m.id DESC LIMIT ?5 OFFSET ?6"
         );
         rows(
@@ -519,7 +520,8 @@ impl Store for SqliteStore {
                 q.session,
                 memhouse_core::access::NOBODY,
                 q.tags.as_ref().map(json).transpose()?,
-                q.live_at.map(us)
+                q.live_at.map(us),
+                q.fresh_only
             ],
             memory_of,
         )
@@ -1417,13 +1419,21 @@ impl Store for SqliteStore {
     }
 
     #[tracing::instrument(name = "db.code_refs_observe", skip_all, fields(db.system = "sqlite", db.operation = "UPDATE", files = files.len()))]
-    async fn code_refs_observe(&self, tenant: &str, subject: &str, files: &[FileState], at: DateTime<Utc>) -> anyhow::Result<Vec<RefChange>> {
+    async fn code_refs_observe(
+        &self,
+        tenant: &str,
+        subject: &str,
+        files: &[FileState],
+        at: DateTime<Utc>,
+        audit: &memhouse_core::traits::ObservationAudit<'_>,
+    ) -> anyhow::Result<Vec<RefChange>> {
         let paths = memhouse_core::staleness::paths_of(files);
         if paths.is_empty() {
             return Ok(vec![]);
         }
         let mut c = self.conn();
-        // The write lock from the start: what is read is what the plan is written against.
+        // The write lock from the start: what is read is what the plan is written against,
+        // and no other observation runs between the read and the write.
         let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let stored = rows(
             &tx,
@@ -1439,30 +1449,53 @@ impl Store for SqliteStore {
         if updates.is_empty() {
             return Ok(vec![]);
         }
-        for u in updates.iter().filter(|u| u.now.is_none()) {
+        let mut before = std::collections::HashMap::new();
+        for id in updates.iter().map(|u| u.id).collect::<HashSet<_>>() {
+            let was = first(&tx, "SELECT stale_since FROM mh_memory WHERE tenant = ?1 AND id = ?2", params![tenant, id.to_string()], |r| Ok(r.get::<_, Option<i64>>(0)?))?
+                .flatten()
+                .is_some();
+            before.insert(id, was);
+        }
+        // A row whose path changes is removed and written again, after every removal: moved
+        // in place, `a` to `b` would meet the row of `b` that the same batch moves to `c`.
+        for u in updates.iter().filter(|u| u.now.as_ref().is_none_or(|c| c.path != u.path)) {
             exec(&tx, "DELETE FROM mh_code_ref WHERE memory_id = ?1 AND path = ?2", params![u.id.to_string(), u.path])?;
         }
         for u in &updates {
             let Some(code) = &u.now else { continue };
-            exec(
-                &tx,
-                "UPDATE mh_code_ref SET path = ?3, stale_since = ?4, seen_hash = ?5 WHERE memory_id = ?1 AND path = ?2",
-                params![u.id.to_string(), u.path, code.path, code.stale_since.map(us), code.seen_hash],
-            )?;
+            if code.path == u.path {
+                exec(
+                    &tx,
+                    "UPDATE mh_code_ref SET stale_since = ?3, seen_hash = ?4 WHERE memory_id = ?1 AND path = ?2",
+                    params![u.id.to_string(), u.path, code.stale_since.map(us), code.seen_hash],
+                )?;
+            } else {
+                exec(
+                    &tx,
+                    "INSERT INTO mh_code_ref (memory_id, tenant, subject, path, blob_hash, stale_since, seen_hash) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    params![u.id.to_string(), tenant, subject, code.path, code.blob_hash, code.stale_since.map(us), code.seen_hash],
+                )?;
+            }
         }
         let mut stale = std::collections::HashMap::new();
-        for id in updates.iter().map(|u| u.id).collect::<HashSet<_>>() {
-            stale.insert(id, restale(&tx, tenant, id)?);
+        for id in before.keys() {
+            stale.insert(*id, restale(&tx, tenant, *id)?);
         }
-        tx.commit()?;
-        Ok(updates
+        let changes: Vec<RefChange> = updates
             .into_iter()
             .filter_map(|u| u.change)
             .map(|mut ch| {
                 ch.stale = stale.get(&ch.id).copied().unwrap_or(false);
+                ch.was_stale = before.get(&ch.id).copied().unwrap_or(false);
                 ch
             })
-            .collect())
+            .collect();
+        // With the changes, or not at all (see the trait).
+        for e in audit(&changes) {
+            audit_in(&tx, &e.actor, &e.action, tenant, e.subject.as_deref(), e.memory_id, &e.detail)?;
+        }
+        tx.commit()?;
+        Ok(changes)
     }
 
     async fn code_refs_at(&self, tenant: &str, subject: &str, paths: &[String]) -> anyhow::Result<Vec<(Uuid, CodeRef)>> {
@@ -1478,7 +1511,13 @@ impl Store for SqliteStore {
     }
 
     #[tracing::instrument(name = "db.code_refs_revalidate", skip_all, fields(db.system = "sqlite", db.operation = "UPDATE"))]
-    async fn code_refs_revalidate(&self, tenant: &str, id: Uuid, refs: Option<&[CodeRef]>) -> anyhow::Result<Option<Vec<CodeRef>>> {
+    async fn code_refs_revalidate(
+        &self,
+        tenant: &str,
+        id: Uuid,
+        refs: Option<&[CodeRef]>,
+        audit: &memhouse_core::traits::RevalidationAudit<'_>,
+    ) -> anyhow::Result<Option<Vec<CodeRef>>> {
         let ids = id.to_string();
         let sql = format!("SELECT {CODE_REF_COLS} FROM mh_code_ref c JOIN mh_memory m ON m.id = c.memory_id WHERE m.tenant = ?1 AND c.memory_id = ?2 ORDER BY c.path");
         let mut c = self.conn();
@@ -1487,11 +1526,16 @@ impl Store for SqliteStore {
             return Ok(None);
         }
         let stored = rows(&tx, &sql, [tenant, ids.as_str()], code_ref_of)?;
-        for code in memhouse_core::staleness::revalidated(&stored, refs)? {
+        let written = memhouse_core::staleness::revalidated(&stored, refs)?;
+        for code in &written {
             exec(&tx, "UPDATE mh_code_ref SET blob_hash = ?3, stale_since = NULL, seen_hash = NULL WHERE memory_id = ?1 AND path = ?2", params![ids, code.path, code.blob_hash])?;
         }
         restale(&tx, tenant, id)?;
         let after = rows(&tx, &sql, [tenant, ids.as_str()], code_ref_of)?;
+        // The event says what this transaction read and wrote, and is written with it.
+        for e in audit(&stored, &written, &after) {
+            audit_in(&tx, &e.actor, &e.action, tenant, e.subject.as_deref(), e.memory_id, &e.detail)?;
+        }
         tx.commit()?;
         Ok(Some(after))
     }

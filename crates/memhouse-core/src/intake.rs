@@ -832,6 +832,9 @@ impl Engine {
                 && type_gate == TypeGate::Confirmation
                 && reviewed
                 && self.cfg.intake.procedural_corrections > 0
+                // A plan or a guess is not a correction, whatever mark it carries: repeating it
+                // must not get it past the statement gate (PR-7).
+                && !statement.is_some_and(|s| s.held())
                 && (m.metadata.get("correction").and_then(|v| v.as_bool()) == Some(true) || statement == Some(Statement::Correction));
             m.status = if !reasons.is_empty() {
                 m.metadata["quarantine_reasons"] = json!(reasons);
@@ -981,6 +984,16 @@ impl Engine {
                         Some(o) if o.status == MemoryStatus::Committed => {
                             supersede.push((old, m.id));
                             it.superseded = Some(old);
+                            // TPL-04: the successor's references were read when the revision
+                            // was made. A file seen since with other content than the
+                            // successor says it is about leaves the successor stale too: read
+                            // here, where the revision takes effect, not only when it began.
+                            let seen = self.store.representations(tenant, old).await?.1;
+                            for r in it.rec.code_refs.iter_mut() {
+                                if let Some(was) = seen.iter().find(|o| o.path == r.path && o.stale_since.is_some() && o.seen_hash.as_deref() != Some(r.blob_hash.as_str())) {
+                                    (r.stale_since, r.seen_hash) = (was.stale_since, was.seen_hash.clone());
+                                }
+                            }
                         }
                         _ => {
                             m.status = MemoryStatus::Rejected;

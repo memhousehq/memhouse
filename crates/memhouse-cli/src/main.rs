@@ -365,7 +365,7 @@ fn install_file_hooks(cfg_path: &Option<PathBuf>, agent: &str, key: &str, subjec
             return Ok(());
         }
     };
-    let key_file = if print { hook::key_file_of(agent) } else { hook::write_key_file(agent, key)? };
+    let key_file = if print { hook::key_file_of(cfg_path, agent) } else { hook::write_key_file(cfg_path, agent, key)? };
     let line = |which: &str| hook::command_line(cfg_path, which, Some(format), &key_file, subject);
     let (opened, edited) = (line("file-opened")?, line("file-edited")?);
     let entries = if agent == "gemini" { hook::gemini_entries(&opened, &edited) } else { hook::claude_code_entries(&opened, &edited) };
@@ -648,7 +648,8 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 None
             } else {
                 let opts = memhouse_server::hook::HookOpts { subject: subject.clone(), paths: files.clone(), ..Default::default() };
-                let found = memhouse_server::hook::touched(memhouse_server::hook::HookEvent::FileOpened, None, &opts)?
+                let found = memhouse_server::hook::touched(memhouse_server::hook::HookEvent::FileOpened, None, &opts)
+                    .await?
                     .filter(|t| t.paths.len() == files.len() && t.request.files.iter().all(|f| f.blob_hash.is_some()))
                     .ok_or_else(|| anyhow::anyhow!("--file: every file must exist, be readable and be inside one git repository"))?;
                 Some(found)

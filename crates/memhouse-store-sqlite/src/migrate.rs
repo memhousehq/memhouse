@@ -216,7 +216,7 @@ mod tests {
         let mut d = record("The parser lives in src/parse.rs");
         d.code_refs = vec![CodeRef::new("src/parse.rs", "h1")];
         store.insert(std::slice::from_ref(&d)).await.unwrap();
-        let flagged = store.code_refs_observe("acme", "user:ada", &[FileState::present("src/parse.rs", "h2")], Utc::now()).await.unwrap();
+        let flagged = store.code_refs_observe("acme", "user:ada", &[FileState::present("src/parse.rs", "h2")], Utc::now(), &memhouse_core::traits::no_audit).await.unwrap();
         assert!(flagged.len() == 1 && flagged[0].flagged && store.get("acme", d.memory.id).await.unwrap().unwrap().stale_since.is_some());
 
         // Opening it again upgrades nothing and copies nothing.

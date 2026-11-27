@@ -280,7 +280,7 @@ The type of the memory decides which of these apply (API 1.5, MEM-01):
 | `working` | No statement gate, no duplicate check and no review: a note is committed as written (the injection screen still applies). In a session it answers with the decision, like `wait`. An agent's working memory is scoped to that agent. |
 | `episodic` | Committed when the writing principal and a source label are on the record; not classified. |
 | `preference` | A stated preference commits. One sent with `"metadata": {"signal": true}` (inferred, not stated) is held as a `candidate` until the same signal arrives again: `{"id":"<the held id>","status":"committed","deduplicated":true}`. With `structured: {"record_type":"preference","attrs":{"key":…}}` it has a key: one value per key in a scope, and the [narrowest scope wins](#get-v1subjectssubjectpreferences-the-preferences-that-apply). |
-| `procedural` | An agent's proposal stays `candidate` until [reviewed](#post-v1review-commit-or-reject-a-candidate), also with `admission = "auto"`. |
+| `procedural` | An agent's proposal stays `candidate` until [reviewed](#post-v1review-commit-or-reject-a-candidate), also with `admission = "auto"`. One exception: a proposal that is a correction (`"metadata": {"correction": true}`, or worded as one) is committed without a reviewer once the same correction has been given `[intake] procedural_corrections` times (3). `procedural_corrections = 0` turns that off, and a policy that raises the type's gate to `approval` does too ([procedural memory](memory-types.md#procedural-memory)). |
 | `taxonomic` | Everyone's but an admin's stays `candidate` until an admin reviews it. |
 
 A write the intake queue can't take (the database is down) is refused with `503 unavailable` and
@@ -810,7 +810,7 @@ curl -s $MH/v1/code/touched -H "authorization: Bearer $KEY" -H 'content-type: ap
 |---|---|
 | `memories` | linked memories that are not stale, newest first, each with its references to the named files |
 | `needs_revalidation` | linked memories with a stale reference, each with all of its references (the stale one may be to another file) |
-| `changes` | what this request changed: references `flagged` stale, `cleared`, or moved (`moved_from`); `stale` says whether the memory is stale afterwards |
+| `changes` | what this request changed: references `flagged` stale, `cleared`, or moved (`moved_from`); `stale` says whether the memory is stale afterwards, `was_stale` whether it was before |
 | `related` | with `query`: procedures that match the task and are not linked to the files |
 | `rendered` | with `render`: `memories` and `related` as a text block |
 
@@ -845,8 +845,12 @@ curl -s $MH/v1/code/changed -H "authorization: Bearer $KEY" -H 'content-type: ap
  "flagged": 1, "cleared": 0}
 ```
 
-`changes`, `flagged` and `cleared` cover the memories the caller may recall (none for a caller
-without `memory:read`).
+`changes`, `flagged` and `cleared` cover the memories a recall could give the caller now:
+committed, valid, unexpired, and inside its labels, kinds and scope (none for a caller without
+`memory:read`). `flagged` counts the memories that became stale with this request, `cleared`
+those that were stale and no longer are: a memory that was stale already and has another file
+change is in `changes` (the reference is `flagged`, `was_stale` is true) and in neither count.
+The reference changes and their audit events are written in one transaction.
 
 ### `POST /v1/code/revalidate`: confirm that a stale memory still holds
 
@@ -856,14 +860,18 @@ Without `code_refs`, every stale reference takes the hash its file was last seen
 (`seen_hash`) and is no longer stale. With `code_refs`, those references take the given hashes
 (each `path` must be one the memory already references; to change the paths, revise it). A
 reference to a deleted file has no hash to take: `400`, and the memory is revised with new
-`code_refs`, or forgotten. Answers `{id, code_refs, stale}`; `stale` is true while another
-reference is still stale. Needs `memory:write` and sight of the memory (`404` otherwise);
+`code_refs`, or forgotten. Answers `{id, code_refs, stale}`. Explicit `code_refs` revalidate
+only the references they name: `stale` is true while another reference is still stale, and
+the memory returns to default recall only when none is. The hash a file was last seen with is
+not necessarily the file as it is now: a client that checked the file itself passes the hash
+of what it checked. Needs `memory:write` and sight of the memory (`404` otherwise);
 `409` for a record that is not committed. Audited as `memory.revalidate` with the old and new
 hash of each reference.
 
 Revising a stale memory also ends its staleness: the new version supersedes it. References the
 revision inherits take the hash their file was last seen with, and a reference to a deleted
-file is not carried over.
+file is not carried over. A revision that names `code_refs` itself is judged when it takes
+effect: a reference whose hash is not the one its file was last seen with starts stale.
 
 ---
 

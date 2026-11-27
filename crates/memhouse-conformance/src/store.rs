@@ -443,19 +443,19 @@ pub async fn run_store_kit(store: Arc<dyn Store>) -> Report {
             let parser = linked("The parser keeps its token table in a perfect hash.", vec![CodeRef::new("src/parse.rs", "p1"), CodeRef::new("src/lex.rs", "l1")]).await?;
             let lexer = linked("The lexer never allocates on the hot path.", vec![CodeRef::new("src/lex.rs", "l1")]).await?;
             let other = linked("The printer wraps lines at one hundred columns.", vec![CodeRef::new("src/print.rs", "x1")]).await?;
-            let flagged = store.code_refs_observe(t, repo, &[FileState::present("src/parse.rs", "p2"), FileState::present("src/lex.rs", "l1")], at).await?;
+            let flagged = store.code_refs_observe(t, repo, &[FileState::present("src/parse.rs", "p2"), FileState::present("src/lex.rs", "l1")], at, &memhouse_core::traits::no_audit).await?;
             let one = flagged.len() == 1 && flagged[0].id == parser && flagged[0].path == "src/parse.rs" && flagged[0].flagged && flagged[0].stale;
             let since = (stale_of(parser).await?, stale_of(lexer).await?, stale_of(other).await?);
             // Another tenant and another subject see nothing of it, and change nothing.
-            let elsewhere = store.code_refs_observe("kit-someone-else", repo, &[FileState::present("src/lex.rs", "l9")], at).await?.len()
-                + store.code_refs_observe(t, "repo:kit-other", &[FileState::present("src/lex.rs", "l9")], at).await?.len();
-            let again = store.code_refs_observe(t, repo, &[FileState::present("src/parse.rs", "p3")], at + chrono::Duration::hours(1)).await?;
+            let elsewhere = store.code_refs_observe("kit-someone-else", repo, &[FileState::present("src/lex.rs", "l9")], at, &memhouse_core::traits::no_audit).await?.len()
+                + store.code_refs_observe(t, "repo:kit-other", &[FileState::present("src/lex.rs", "l9")], at, &memhouse_core::traits::no_audit).await?.len();
+            let again = store.code_refs_observe(t, repo, &[FileState::present("src/parse.rs", "p3")], at + chrono::Duration::hours(1), &memhouse_core::traits::no_audit).await?;
             let seen = store.representations(t, parser).await?.1.into_iter().find(|c| c.path == "src/parse.rs");
-            let cleared = store.code_refs_observe(t, repo, &[FileState::present("src/parse.rs", "p1")], at).await?;
+            let cleared = store.code_refs_observe(t, repo, &[FileState::present("src/parse.rs", "p1")], at, &memhouse_core::traits::no_audit).await?;
             let fresh = stale_of(parser).await?.is_none() && cleared.len() == 1 && cleared[0].cleared && !cleared[0].stale;
             // A rename with the same content moves the reference; with other content it is stale
             // too; a deletion is stale with no hash seen.
-            let moved = store.code_refs_observe(t, repo, &[FileState::renamed("src/lex.rs", "src/scan.rs", "l1"), FileState::deleted("src/print.rs")], at).await?;
+            let moved = store.code_refs_observe(t, repo, &[FileState::renamed("src/lex.rs", "src/scan.rs", "l1"), FileState::deleted("src/print.rs")], at, &memhouse_core::traits::no_audit).await?;
             let paths = |id: Uuid| {
                 let store = &store;
                 async move { Ok::<_, anyhow::Error>(store.representations(t, id).await?.1.into_iter().map(|c| (c.path, c.stale_since.is_some(), c.seen_hash)).collect::<Vec<_>>()) }
@@ -463,6 +463,30 @@ pub async fn run_store_kit(store: Arc<dyn Store>) -> Report {
             let (lexer_refs, other_refs) = (paths(lexer).await?, paths(other).await?);
             let renamed = lexer_refs == vec![("src/scan.rs".to_string(), false, None)] && stale_of(lexer).await?.is_none() && moved.iter().filter(|c| c.moved_from.as_deref() == Some("src/lex.rs")).count() == 2;
             let deleted = other_refs == vec![("src/print.rs".to_string(), true, None)] && stale_of(other).await? == Some(at);
+            // A record that is stale already is reported as such when another of its files
+            // changes: it did not become stale with that observation.
+            let two = linked("The cache and the index are rebuilt together.", vec![CodeRef::new("src/cache.rs", "c1"), CodeRef::new("src/index.rs", "i1")]).await?;
+            let one_file = store.code_refs_observe(t, repo, &[FileState::present("src/cache.rs", "c2")], at, &memhouse_core::traits::no_audit).await?;
+            let other_file = store.code_refs_observe(t, repo, &[FileState::present("src/index.rs", "i2")], at, &memhouse_core::traits::no_audit).await?;
+            let transitions = one_file.len() == 1 && one_file[0].id == two && !one_file[0].was_stale && one_file[0].stale && other_file.len() == 1 && other_file[0].flagged && other_file[0].was_stale;
+            // Renames that pass through each other's paths in one batch: `b` to `c`, then `a`
+            // to `b`, on a record that references both. And the events given for the changes
+            // are in the audit log with them.
+            let chain = linked("The reader and the writer share one buffer type.", vec![CodeRef::new("src/a.rs", "a1"), CodeRef::new("src/b.rs", "b1")]).await?;
+            let event = |changes: &[RefChange]| {
+                vec![memhouse_core::intake::AuditEntry {
+                    actor: "conformance".into(),
+                    action: "kit.observed".into(),
+                    subject: Some(repo.to_string()),
+                    memory_id: changes.first().map(|c| c.id),
+                    detail: serde_json::json!({ "changes": changes.len() }),
+                }]
+            };
+            let renamed_chain =
+                store.code_refs_observe(t, repo, &[FileState::renamed("src/b.rs", "src/c.rs", "b1"), FileState::renamed("src/a.rs", "src/b.rs", "a1")], at, &event).await;
+            let chain_refs: Vec<(String, String)> = store.representations(t, chain).await?.1.into_iter().map(|c| (c.path, c.blob_hash)).collect();
+            let chained = renamed_chain.as_ref().is_ok_and(|c| c.len() == 2) && chain_refs == vec![("src/b.rs".to_string(), "a1".to_string()), ("src/c.rs".to_string(), "b1".to_string())];
+            let audited = store.audit_log(t, 50).await?.iter().any(|e| e.action == "kit.observed" && e.memory_id == Some(chain) && e.detail["changes"] == 2);
             Ok(unless(
                 one && since == (Some(at), None, None)
                     && elsewhere == 0
@@ -470,10 +494,14 @@ pub async fn run_store_kit(store: Arc<dyn Store>) -> Report {
                     && seen.as_ref().is_some_and(|c| c.stale_since == Some(at) && c.seen_hash.as_deref() == Some("p3"))
                     && fresh
                     && renamed
-                    && deleted,
+                    && deleted
+                    && transitions
+                    && chained
+                    && audited,
                 || {
                     format!(
-                        "first observation {flagged:?}; stale since {since:?}; {elsewhere} change(s) for another tenant or subject; seen again {again:?} → {seen:?}; cleared {cleared:?}; after the rename {lexer_refs:?}; after the deletion {other_refs:?}"
+                        "first observation {flagged:?}; stale since {since:?}; {elsewhere} change(s) for another tenant or subject; seen again {again:?} → {seen:?}; cleared {cleared:?}; after the rename {lexer_refs:?}; after the deletion {other_refs:?}; a second file of a stale record reported with its state before: {transitions} ({other_file:?}); renames b→c then a→b in one batch: {} → {chain_refs:?}; the observation's audit event written: {audited}",
+                        renamed_chain.as_ref().map(|c| c.len().to_string()).unwrap_or_else(|e| format!("{e:#}"))
                     )
                 },
             ))
@@ -482,7 +510,7 @@ pub async fn run_store_kit(store: Arc<dyn Store>) -> Report {
     );
     r.outcome(
         "stale_records_are_left_out_of_search",
-        "a record with a stale reference is left out by search and by the exact lookup unless the query asks for stale records, and is still read by id and listed",
+        "a record with a stale reference is left out by search and by the exact lookup unless the query asks for stale records, and is still read by id and listed (unless the list asks for fresh records only)",
         async {
             let id = linked("The scheduler wakes sleeping tasks through a timer wheel.", vec![CodeRef::new("src/timer.rs", "t1")]).await?;
             let ask = |stale: bool| {
@@ -503,13 +531,52 @@ pub async fn run_store_kit(store: Arc<dyn Store>) -> Report {
                     Ok::<bool, anyhow::Error>(hits.iter().any(|h| h.memory.id == id))
                 }
             };
-            let before = ask(false).await?;
-            store.code_refs_observe(t, repo, &[FileState::present("src/timer.rs", "t2")], at).await?;
-            let (default, with_stale) = (ask(false).await?, ask(true).await?);
+            // A structured record about the same file, found by the exact lookup.
+            let ticket = e
+                .remember(RememberRequest {
+                    subject: Some(repo.into()),
+                    content: "Ticket KIT-7 tracks the timer wheel rewrite".into(),
+                    structured: Some(Structured { record_type: "ticket".into(), attrs: serde_json::json!({ "ticket_id": "KIT-7" }) }),
+                    code_refs: vec![CodeRef::new("src/timer.rs", "t1")],
+                    actor: Some("conformance".into()),
+                    source: Some("conformance".into()),
+                    wait: true,
+                    ..Default::default()
+                })
+                .await?
+                .id;
+            let exact = |stale: bool| {
+                let e = &e;
+                async move {
+                    let hits = e
+                        .recall(RecallRequest {
+                            subject: Some(repo.into()),
+                            query: "the ticket".into(),
+                            k: Some(10),
+                            analyze: Some(false),
+                            exact: Some(ExactQuery { record_type: Some("ticket".into()), attrs: serde_json::json!({ "ticket_id": "KIT-7" }) }),
+                            include_stale: stale,
+                            actor: Some("conformance".into()),
+                            ..Default::default()
+                        })
+                        .await?
+                        .hits;
+                    Ok::<bool, anyhow::Error>(hits.iter().any(|h| h.exact && h.memory.id == ticket))
+                }
+            };
+            let before = ask(false).await? && exact(false).await?;
+            store.code_refs_observe(t, repo, &[FileState::present("src/timer.rs", "t2")], at, &memhouse_core::traits::no_audit).await?;
+            let (default, with_stale) = (ask(false).await? || exact(false).await?, ask(true).await? && exact(true).await?);
+            // A list shows stale records unless it is asked for fresh ones only, and then the
+            // filter is applied before the limit.
+            let fresh = store.list(&ListQuery { tenant: tenant.clone(), subject: Some(repo.into()), limit: 1000, fresh_only: true, ..Default::default() }).await?;
+            let fresh_only = !fresh.is_empty() && fresh.iter().all(|m| m.stale_since.is_none());
             let by_id = store.get(t, id).await?.is_some_and(|m| m.stale_since == Some(at));
             let listed = store.list(&ListQuery { tenant: tenant.clone(), subject: Some(repo.into()), limit: 100, ..Default::default() }).await?.iter().any(|m| m.id == id);
-            Ok(unless(before && !default && with_stale && by_id && listed, || {
-                format!("recalled before: {before}; by default when stale: {default}; with include_stale: {with_stale}; read by id with its mark: {by_id}; listed: {listed}")
+            Ok(unless(before && !default && with_stale && by_id && listed && fresh_only, || {
+                format!(
+                    "recalled before, by search and by exact lookup: {before}; by either when stale: {default}; by both with include_stale: {with_stale}; read by id with its mark: {by_id}; listed: {listed}; a list of fresh records only holds none that is stale: {fresh_only}"
+                )
             }))
         }
         .await,
@@ -519,7 +586,7 @@ pub async fn run_store_kit(store: Arc<dyn Store>) -> Report {
         "revalidation gives a reference its new hash and clears the mark; references are read by path; staleness marks are exported and imported with their record",
         async {
             let id = linked("The router matches paths through a radix tree.", vec![CodeRef::new("src/route.rs", "r1"), CodeRef::new("src/tree.rs", "n1")]).await?;
-            store.code_refs_observe(t, repo, &[FileState::present("src/route.rs", "r2"), FileState::present("src/tree.rs", "n2")], at).await?;
+            store.code_refs_observe(t, repo, &[FileState::present("src/route.rs", "r2"), FileState::present("src/tree.rs", "n2")], at, &memhouse_core::traits::no_audit).await?;
             let at_path: Vec<(Uuid, CodeRef)> = store.code_refs_at(t, repo, &["src/route.rs".to_string()]).await?;
             let read = at_path.len() == 1 && at_path[0].0 == id && at_path[0].1.seen_hash.as_deref() == Some("r2") && store.code_refs_at("kit-someone-else", repo, &["src/route.rs".to_string()]).await?.is_empty();
             // Exported with its marks, and imported with them under a new id.
@@ -533,15 +600,15 @@ pub async fn run_store_kit(store: Arc<dyn Store>) -> Report {
             let imported = store.get(t, copy.id).await?.is_some_and(|m| m.stale_since == Some(at)) && store.representations(t, copy.id).await?.1 == copy.code_refs;
             // One reference by a given hash: the record stays stale for the other. Then the rest
             // by the hash last seen.
-            let part = store.code_refs_revalidate(t, id, Some(&[CodeRef::new("src/route.rs", "r9")])).await?.unwrap_or_default();
+            let part = store.code_refs_revalidate(t, id, Some(&[CodeRef::new("src/route.rs", "r9")]), &memhouse_core::traits::no_revalidation_audit).await?.unwrap_or_default();
             let still = stale_of(id).await?.is_some();
-            let all = store.code_refs_revalidate(t, id, None).await?.unwrap_or_default();
+            let all = store.code_refs_revalidate(t, id, None, &memhouse_core::traits::no_revalidation_audit).await?.unwrap_or_default();
             let done = stale_of(id).await?.is_none();
             let hashes = |refs: &[CodeRef]| refs.iter().map(|c| (c.path.clone(), c.blob_hash.clone(), c.stale_since.is_some())).collect::<Vec<_>>();
             let expected_part = vec![("src/route.rs".to_string(), "r9".to_string(), false), ("src/tree.rs".to_string(), "n1".to_string(), true)];
             let expected_all = vec![("src/route.rs".to_string(), "r9".to_string(), false), ("src/tree.rs".to_string(), "n2".to_string(), false)];
-            let unknown = store.code_refs_revalidate(t, Uuid::now_v7(), None).await?.is_none() && store.code_refs_revalidate("kit-someone-else", id, None).await?.is_none();
-            let foreign = store.code_refs_revalidate(t, id, Some(&[CodeRef::new("src/absent.rs", "x")])).await.is_err();
+            let unknown = store.code_refs_revalidate(t, Uuid::now_v7(), None, &memhouse_core::traits::no_revalidation_audit).await?.is_none() && store.code_refs_revalidate("kit-someone-else", id, None, &memhouse_core::traits::no_revalidation_audit).await?.is_none();
+            let foreign = store.code_refs_revalidate(t, id, Some(&[CodeRef::new("src/absent.rs", "x")]), &memhouse_core::traits::no_revalidation_audit).await.is_err();
             Ok(unless(read && exported && imported && hashes(&part) == expected_part && still && hashes(&all) == expected_all && done && unknown && foreign, || {
                 format!(
                     "read by path: {read}; exported with marks: {exported}; imported with marks: {imported}; after one reference {:?} (still stale: {still}); after the rest {:?} (fresh: {done}); unknown record answered none: {unknown}; a path that is no reference refused: {foreign}",

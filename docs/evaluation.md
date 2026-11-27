@@ -124,7 +124,10 @@ conversations:
 
 The replay keeps a repository per conversation (a version per file), so a file's hash changes
 with an edit and not with a rename. Code is replayed with `remember`; a replay as ingested
-conversations (`--ingest`) writes no file links and skips these questions.
+conversations (`--ingest`) writes no file links and skips these questions. A `touch` question
+about a file that is not in the conversation's repository at that point (never linked by a
+turn's `files`, or deleted or renamed before) fails the replay with its place: it would test
+nothing.
 
 ## The synthetic timeline generator
 
@@ -227,6 +230,7 @@ the running policy and under the proposed one, and the two are compared:
 | storage F1, retrieval F1 | falls by more than `max_f1_drop` points (2) |
 | stale-fact rate | rises by more than `max_stale_rise` points (1) |
 | contamination rate | rises by more than `max_contamination_rise` points (1) |
+| file-touched recall, stale memories withheld (suites with code) | falls by more than `max_f1_drop` points (2) |
 
 A refused approval answers `409 conflict` with the report, writes a `policy.refuse` audit event
 with the reason `regression_gate` and every finding, and leaves the version `proposed`. A

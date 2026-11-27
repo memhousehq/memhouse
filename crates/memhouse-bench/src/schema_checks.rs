@@ -404,7 +404,8 @@ async fn upgrade_in(base: &Engine, url1: &str, url2: &str) -> Outcome {
     .await;
     let written_by_v1 = || upgraded.recall(RecallRequest { subject: Some("gov:upgrade".into()), query: "written by a v1 process".into(), k: Some(3), ..Default::default() });
     let before = written_by_v1().await?.hits.len();
-    let flagged = upgraded.store.code_refs_observe("default", "gov:upgrade", &[FileState::present("src/v9.rs", "h2")], chrono::Utc::now()).await?;
+    let flagged =
+        upgraded.store.code_refs_observe("default", "gov:upgrade", &[FileState::present("src/v9.rs", "h2")], chrono::Utc::now(), &memhouse_core::traits::no_audit).await?;
     let after = written_by_v1().await?.hits.len();
     if v9_ref.is_err() || before != 1 || flagged.len() != 1 || after != 0 {
         problems.push(format!(
