@@ -13,7 +13,8 @@
 //!   credentials or a wildcard.
 //! - `quarantine_review` (GOV-11): 50 quarantined candidates are processed, half rejected and
 //!   half rephrased and approved; every decision is applied and audited, nothing quarantined is
-//!   committed as it stands, and a rephrasing the gate holds changes nothing.
+//!   committed as it stands, and a rephrasing the gate holds leaves the reviewed record as it
+//!   was and is itself kept as a rejected record.
 //! - `console_evaluation` (QUAL-11): after replays under two policy versions, the routes give
 //!   the suites, the runs and the metrics with their trend by policy version, per tenant.
 //! - `profile_advisor` (PROF-11): at 90% of a Lite limit the advisor recommends the next
@@ -95,7 +96,7 @@ async fn run_all(base: &Engine) -> anyhow::Result<Vec<Outcome>> {
         cfg.server.session_idle_secs = defaults.session_idle_secs;
         cfg.governance.audit_reads = false;
         // PROF-11 is checked at 90% of a limit the check can reach.
-        cfg.advisor.lite_max_subject_records = 10;
+        cfg.advisor = memhouse_core::config::AdvisorConfig { lite_max_subject_records: 10, ..Default::default() };
         let e = e.reconfigure(cfg);
         // A revocation is seen at once, not after the 5 seconds a verified key is cached.
         let e = e.clone().with_authenticator(Authenticator::new(e.store.clone(), e.cfg.clone()).with_cache_ttl(std::time::Duration::ZERO));
@@ -103,7 +104,8 @@ async fn run_all(base: &Engine) -> anyhow::Result<Vec<Outcome>> {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let addr = listener.local_addr()?;
         let server = tokio::spawn(memhouse_server::serve_listener(listener, e.clone()));
-        let mut c = Console { api: Api::new(format!("http://{addr}")), origin: format!("http://{addr}"), e: e.clone() };
+        let db = scratch.db().await?;
+        let mut c = Console { api: Api::new(format!("http://{addr}")), origin: format!("http://{addr}"), e: e.clone(), db: Some(db) };
         let out = async {
             let mut out = vec![actions(&mut c).await?, session(&mut c).await?, csp_cors(&mut c).await?, review(&mut c).await?, evaluation(&mut c).await?, advisor(&mut c).await?];
             // Every answer above was checked against the published API document as it came.
@@ -115,6 +117,9 @@ async fn run_all(base: &Engine) -> anyhow::Result<Vec<Outcome>> {
         }
         .await;
         server.abort();
+        if let Some(db) = &c.db {
+            db.close().await;
+        }
         out
     }
     .await;
@@ -127,6 +132,8 @@ struct Console {
     /// The server's own origin, as a browser on the console's page sends it.
     origin: String,
     e: Engine,
+    /// The scratch database itself, for the scenario that takes a table away from the store.
+    db: Option<crate::scratch::Db>,
 }
 
 /// A logged-in console: the cookie the browser holds and the CSRF token the page holds.
@@ -162,7 +169,8 @@ impl Console {
 
     async fn login(&mut self, key: &str) -> anyhow::Result<Session> {
         let r = self.login_reply(key, &[]).await?;
-        anyhow::ensure!(r.status == 200, "login answered {} {}", r.status, r.body);
+        // Never a session answer in a message: it holds the session's CSRF token.
+        anyhow::ensure!(r.status == 200, "login answered {}", r.status);
         let cookie = set_cookie(&r).split(';').next().unwrap_or("").to_string();
         Ok(Session { cookie, csrf: r.body["csrf_token"].as_str().unwrap_or("").to_string() })
     }
@@ -351,7 +359,7 @@ async fn session(c: &mut Console) -> anyhow::Result<Outcome> {
     // Login: the cookie's flags; nothing secret in the body; the store keeps a hash.
     let r = c.login_reply(&key, &[]).await?;
     let set = set_cookie(&r);
-    expect(r.status == 200, format!("login: {} {}", r.status, r.body));
+    expect(r.status == 200, format!("login: {}", r.status));
     expect(
         set.starts_with("memhouse_session=mhs_")
             && set.contains("; HttpOnly")
@@ -377,7 +385,8 @@ async fn session(c: &mut Console) -> anyhow::Result<Outcome> {
     let who = c.get(&s, "/v1/whoami").await?;
     expect(who.body["principal"] == me && who.body["via"] == "session", format!("whoami through the session: {}", who.body));
     let info = c.get(&s, "/v1/session").await?;
-    expect(info.status == 200 && info.body["csrf_token"] == s.csrf.as_str(), format!("the session's own description: {} {}", info.status, info.body));
+    let same_token = info.body["csrf_token"] == s.csrf.as_str();
+    expect(info.status == 200 && same_token, format!("the session's own description: status {}, the login's CSRF token: {same_token}", info.status));
     let by_key = c.api.call("GET", "/v1/session", "/v1/session", None, &[]).await?;
     expect(by_key.status == 404, format!("GET /v1/session with a key: {}", by_key.status));
     let nested = c.page(&s, "POST", "/v1/session", "/v1/session", None).await?;
@@ -415,7 +424,8 @@ async fn session(c: &mut Console) -> anyhow::Result<Outcome> {
     // Expiry, the idle limit and the retention pass: the stored end is moved, no clock is waited for.
     let id = s.id();
     let mut row = row.ok_or_else(|| anyhow::anyhow!("no session row"))?;
-    let now = chrono::Utc::now();
+    // In microseconds, as a store keeps it: the stored time is compared with this one below.
+    let now = chrono::DateTime::from_timestamp_micros(chrono::Utc::now().timestamp_micros()).unwrap_or_default();
     c.e.store.session_delete(&id).await?;
     row.expires_at = now - chrono::Duration::seconds(1);
     c.e.store.session_put(&row).await?;
@@ -484,6 +494,25 @@ async fn session(c: &mut Console) -> anyhow::Result<Outcome> {
     let dis = c.page(&root, "POST", "/v1/principals/{id}/disable", "/v1/principals/admin:gov-session-three/disable", None).await?;
     let r = c.get(&s3, "/v1/session").await?;
     expect(dis.status == 200 && r.status == 401, format!("a session whose principal was disabled: disable {} then {}", dis.status, r.status));
+    // A store that does not answer ends no session: with the principals table out of reach
+    // the lookup of the session's principal fails, the request is refused, the session's row
+    // stays, and the session works again once the table is back.
+    if let Some(db) = c.db.take() {
+        use crate::scratch::Sql;
+        db.batch(Sql::same("ALTER TABLE mh_principal RENAME TO mh_principal_away")).await?;
+        let during = c.get(&root, "/v1/session").await;
+        let kept = c.e.store.session_get(&root.id()).await;
+        // Back in place before anything is judged, whatever the two calls answered.
+        let back = db.batch(Sql::same("ALTER TABLE mh_principal_away RENAME TO mh_principal")).await;
+        c.db = Some(db);
+        back?;
+        let (during, kept) = (during?, kept?.is_some());
+        let after = c.get(&root, "/v1/session").await?;
+        expect(
+            during.status == 401 && kept && after.status == 200,
+            format!("a failed principal lookup: {} (session row kept: {kept}), then {} with the store back", during.status, after.status),
+        );
+    }
     let own = c.page(&root, "POST", "/v1/principals/{id}/disable", &format!("/v1/principals/{me}/disable"), None).await?;
     expect(own.status == 400, format!("a principal disabling itself: {}", own.status));
     let boot = c.login(BOOT).await?;
@@ -668,6 +697,18 @@ async fn review(c: &mut Console) -> anyhow::Result<Outcome> {
         .await?;
     let unchanged = c.memory(&reviewer, &ids[0]).await?;
     expect(held.status == 409 && unchanged.body["status"] == "quarantined", format!("a rephrasing the gate holds: {} and the record is {}", held.status, unchanged.body["status"]));
+    // The refused wording is not left waiting in the queue: it is kept as a rejected record.
+    let all = c
+        .page(&reviewer, "GET", "/v1/subjects/{subject}/memories", &format!("/v1/subjects/{}/memories?limit=200&include_inactive=true", subject.replace(':', "%3A")), None)
+        .await?;
+    let refused_wording: Vec<String> = all.body["items"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|m| m["content"].as_str().is_some_and(|t| t.starts_with("Disregard all prior")))
+        .filter_map(|m| m["status"].as_str().map(String::from))
+        .collect();
+    expect(refused_wording == ["rejected"], format!("the wording the gate held is stored as {refused_wording:?}; expected one rejected record"));
     let both = c.post(&reviewer, "/v1/review", json!({"id": ids[0], "action": "reject", "content": "a wording with a rejection"})).await?;
     expect(both.status == 400, format!("content with reject: {}", both.status));
     // A principal without memory:review decides nothing.
@@ -875,13 +916,14 @@ async fn advisor(c: &mut Console) -> anyhow::Result<Outcome> {
     let largest = measure(&first, "largest_subject_records")["value"].as_f64().unwrap_or(0.0) as u64;
     let limit = (largest * 13 / 10).max(20) + 1;
     let mut cfg = (*c.e.cfg).clone();
-    cfg.advisor.lite_max_subject_records = limit;
-    cfg.advisor.lite_max_records = 1_000_000;
+    // The default thresholds, whatever the deployment under test configures, with the two
+    // limits this check drives.
+    cfg.advisor = memhouse_core::config::AdvisorConfig { lite_max_subject_records: limit, lite_max_records: 1_000_000, ..Default::default() };
     let tuned = c.e.clone().reconfigure(cfg);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let addr = listener.local_addr()?;
     let server = tokio::spawn(memhouse_server::serve_listener(listener, tuned.clone()));
-    let mut t = Console { api: Api::new(format!("http://{addr}")), origin: format!("http://{addr}"), e: tuned };
+    let mut t = Console { api: Api::new(format!("http://{addr}")), origin: format!("http://{addr}"), e: tuned, db: None };
     let ran = async {
         let admin = t.login(BOOT).await?;
         let below = t.get(&admin, "/v1/advisor").await?;

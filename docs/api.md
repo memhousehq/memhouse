@@ -999,7 +999,9 @@ curl -s -i -X POST localhost:7077/v1/session -H "authorization: Bearer $KEY"
 - The session has the permissions of its key; it ends after `[server] session_ttl_secs`,
   after `session_idle_secs` without use, on logout, and with its next request once the key is
   revoked or expired or the principal disabled. A request with an ended session gets `401`.
-- A credential that carries no permission opens no session (`403`).
+- A credential that carries no permission opens no session (`403`), and a browser opens one
+  from the console's own origin only: a page of an origin on `cors_origins` calls the API
+  with its key and gets no session.
 
 ### Principals and keys
 

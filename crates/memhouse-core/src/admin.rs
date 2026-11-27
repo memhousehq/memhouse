@@ -611,6 +611,16 @@ impl Engine {
         // the replacement goes stale with them like the original would (TPL-04). A file seen
         // changed since is reported again by the next hook, which marks the replacement.
         let (structured, code_refs) = self.store.representations(tenant, m.id).await?;
+        // What its files were last seen as while it waited: a writer cannot set a reference
+        // stale, so after the write those observations are made again (below).
+        let seen: Vec<FileState> = code_refs
+            .iter()
+            .filter(|c| c.stale_since.is_some())
+            .map(|c| match &c.seen_hash {
+                Some(h) => FileState::present(c.path.clone(), h.clone()),
+                None => FileState::deleted(c.path.clone()),
+            })
+            .collect();
         let code_refs = code_refs.into_iter().map(|c| CodeRef::new(c.path, c.blob_hash)).collect();
         let req = RememberRequest {
             tenant: Some(tenant.to_string()),
@@ -663,6 +673,13 @@ impl Engine {
                 "the rephrased text was not committed ({}); the record under review is unchanged",
                 written.note.unwrap_or_else(|| status.as_str().to_string())
             )));
+        }
+        // A file reported changed while the reviewed record waited made its reference stale.
+        // The replacement was written with the same hash and is as stale: the file's state
+        // as last seen is observed again, which marks it (and changes nothing for a reference
+        // that already has that state).
+        if !seen.is_empty() && !written.deduplicated {
+            self.files_observed(tenant, &m.subject, &seen, by, json!({ "event": "review.rephrase", "reason": m.id })).await?;
         }
         self.settle_record(tenant, m.id).await?;
         if !self.store.set_status(tenant, m.id, MemoryStatus::Rejected).await? {

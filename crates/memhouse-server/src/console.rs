@@ -64,9 +64,13 @@ fn authority(v: &str) -> String {
 /// An origin as `(scheme, authority)`, the scheme's default port left out, or `None` for
 /// `null` and anything that is not an `http` or `https` origin.
 fn origin_parts(origin: &str) -> Option<(&'static str, String)> {
-    let (scheme, rest, default) = match origin.trim() {
-        o if o.len() >= 8 && o[..8].eq_ignore_ascii_case("https://") => ("https", &o[8..], ":443"),
-        o if o.len() >= 7 && o[..7].eq_ignore_ascii_case("http://") => ("http", &o[7..], ":80"),
+    // `get`, not an index: the value may be configuration with letters outside ASCII, and a
+    // byte offset inside one of them is no place to cut.
+    let o = origin.trim();
+    let prefixed = |p: &str| o.get(..p.len()).filter(|head| head.eq_ignore_ascii_case(p)).and_then(|_| o.get(p.len()..));
+    let (scheme, rest, default) = match (prefixed("https://"), prefixed("http://")) {
+        (Some(rest), _) => ("https", rest, ":443"),
+        (None, Some(rest)) => ("http", rest, ":80"),
         _ => return None,
     };
     let rest = rest.strip_suffix('/').unwrap_or(rest);
@@ -85,18 +89,19 @@ fn loopback(host: &str) -> bool {
 
 /// Whether a request's `Origin` is this server itself: scheme, host and port (RFC 6454).
 ///
-/// - `[server] public_url`, when set, is the server's origin behind a proxy.
-/// - Otherwise, and for direct access beside a proxy, it is the `Host` the request came for:
-///   with either scheme on a loopback host, and with `https` on any other (plain `http` there
-///   only when `session_cookie_secure = "never"` says the deployment runs without TLS).
+/// - `[server] public_url`, when set, is the server's origin, and the only one: the `Host` of
+///   a request says nothing then (behind a proxy it is whatever the proxy sends upstream).
+/// - Otherwise it is the `Host` the request came for: with either scheme on a loopback host,
+///   and with `https` on any other (plain `http` there only when
+///   `session_cookie_secure = "never"` says the deployment runs without TLS).
 ///
 /// Forwarding headers (`X-Forwarded-Host`, `Forwarded`) are not read: nothing says a proxy
 /// set them, and a deployment behind a proxy that rewrites `Host` states its origin in
 /// `public_url`.
 pub fn same_origin(cfg: &Config, headers: &HeaderMap, origin: &str) -> bool {
     let Some((scheme, auth)) = origin_parts(origin) else { return false };
-    if cfg.server.public_url.as_deref().and_then(origin_parts).is_some_and(|own| own == (scheme, auth.clone())) {
-        return true;
+    if let Some(configured) = cfg.server.public_url.as_deref() {
+        return origin_parts(configured).is_some_and(|own| own == (scheme, auth));
     }
     let Some(host) = headers.get(header::HOST).and_then(|v| v.to_str().ok()) else { return false };
     let default = if scheme == "https" { ":443" } else { ":80" };
@@ -233,7 +238,21 @@ pub fn scan_page(html: &str) -> PageScan {
     let mut scan = PageScan::default();
     let mut rest = html;
     while let Some(at) = rest.find('<') {
-        let end = rest[at..].find('>').map_or(rest.len(), |e| at + e + 1);
+        // The `>` that ends the tag, not one inside a quoted attribute value.
+        let mut quote = None;
+        let close = rest[at..].char_indices().find(|&(_, c)| match (quote, c) {
+            (None, '"' | '\'') => {
+                quote = Some(c);
+                false
+            }
+            (Some(q), c) if c == q => {
+                quote = None;
+                false
+            }
+            (None, '>') => true,
+            _ => false,
+        });
+        let end = close.map_or(rest.len(), |(e, _)| at + e + 1);
         let tag = &rest[at..end];
         let lower = tag.to_ascii_lowercase();
         let after = &rest[end..];
@@ -352,6 +371,14 @@ fn no_store(mut resp: Response) -> Response {
 /// Log in: the request presents a key as every API request does; the answer sets the session
 /// cookie. The key is not kept by the page, and the session secret is not in the body.
 pub(crate) async fn session_open(State(st): State<AppState>, Who(c): Who, headers: HeaderMap) -> Result<Response, ApiError> {
+    // A browser opens a session from the console's own page and nowhere else: a page of an
+    // origin on the CORS allow-list calls the API with its key, but gets no session cookie
+    // (which would be set for the console's site, under the cookie rule of this request).
+    if let Some(origin) = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()) {
+        if !same_origin(&st.engine.cfg, &headers, origin) {
+            return Err(ApiError(error::forbidden("a session is opened from the console's own origin only")));
+        }
+    }
     // Asked with a session's cookie: refused by the engine, which names the reason.
     let presented = crate::credential(&headers).unwrap_or_default();
     let (secret, info) = c.session_open(&presented).await?;
@@ -437,6 +464,8 @@ mod tests {
             ("<a href=\" JavaScript:go()\">x</a>", "javascript: URL"),
             ("<script>go()</script>", "script without src"),
             ("<script src=\"/console.js\">go()</script>", "script with a body"),
+            ("<p title=\"a > b\" style=\"color:red\">x</p>", "style attribute after a quoted >"),
+            ("<a title='x > y' onclick=go()>x</a>", "event handler after a quoted >"),
         ] {
             assert!(!scan_page(html).inline.is_empty(), "not found: {what}");
         }
@@ -537,8 +566,19 @@ mod tests {
         let mut public = Config::default();
         public.server.public_url = Some("https://memhouse.example.com".into());
         assert!(same_origin(&public, &proxied, "https://memhouse.example.com"));
+        // A value with letters outside ASCII is read without cutting inside one of them.
+        let mut odd = Config::default();
+        odd.server.public_url = Some("http://\u{e9}.example".into());
+        assert!(!cookie_secure(&odd, &proxied) && !same_origin(&odd, &proxied, "https://memhouse.example.com"));
+        assert_eq!(origin_parts("h\u{e9}\u{e9}\u{e9}\u{e9}://x"), None);
         assert!(!same_origin(&public, &proxied, "http://memhouse.example.com"));
         assert!(!same_origin(&public, &proxied, "https://other.example.com"));
+        // The configured origin is the only one: the Host of a request is not a second.
+        let mut local = Config::default();
+        local.server.public_url = Some("https://localhost".into());
+        assert!(same_origin(&local, &h("localhost"), "https://localhost"));
+        assert!(!same_origin(&local, &h("localhost"), "http://localhost"), "the Host fallback applied beside public_url");
+        assert!(!same_origin(&public, &h("localhost:7077"), "http://localhost:7077"));
         // With an https public origin the cookie is the Secure one whatever Host the proxy sends,
         // and the plain cookie a page could have planted is not read.
         assert!(cookie_secure(&public, &proxied));

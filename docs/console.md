@@ -118,7 +118,8 @@ record instead. Otherwise the new record is committed with `metadata.rephrased_f
 the reviewed record, which is rejected; the audit log has `memory.rephrase` (on the reviewed
 record, naming its replacement) and the write's own events. The new record keeps the reviewed
 record's subject, kind, tags, labels, scope, structured form, the files it is linked to
-(with the hashes it was written for) and, for a revision, the version it replaces. Its
+(with the hashes it was written for; a file reported changed while the record waited leaves
+the new record stale too) and, for a revision, the version it replaces. Its
 author (`provenance.agent`) is you, not the agent that proposed the original.
 
 A rejected or quarantined record is never recalled.
@@ -211,8 +212,9 @@ can read it, pages without a Content-Security-Policy, and an API open to every o
   rule of `[server] session_cookie_secure = "auto"`. On any other host over plain HTTP the
   browser drops the cookie and login does not work: put TLS in front, which you need anyway.
   `"never"` exists for a network you trust; the cookie can then be read on the wire. With an
-  `https` `[server] public_url` the cookie is always the `Secure` one, whatever `Host` a
-  proxy sends upstream; the plain cookie is then never set and never read.
+  `https` `[server] public_url`, `"auto"` gives the `Secure` cookie whatever `Host` a proxy
+  sends upstream; the plain cookie is then never set and never read. (`"never"` still gives
+  the plain one: it overrides everything.)
 - **CSRF.** A request made with the cookie that changes anything must carry the session's
   token in `x-memhouse-csrf`. The page reads the token from `GET /v1/session` and keeps it in
   memory only. The token is derived from the session secret, so it is not stored either.
@@ -221,9 +223,10 @@ can read it, pages without a Content-Security-Policy, and an API open to every o
   allow-list. So is one whose `Sec-Fetch-Site` is anything but `same-origin`: a page on a
   sibling host of the same site, another site, or a navigation.
 - **What a refusal leaves.** A request the session's own rules refuse (the CSRF token, a
-  listed foreign origin, `Sec-Fetch-Site`) is audited as `access.denied` with rule `csrf`,
-  and does not count as use of the session. A request from an origin that is not on the
-  allow-list never gets that far: it is refused by the CORS rule before authentication,
+  listed foreign origin, `Sec-Fetch-Site`) is refused and an `access.denied` event with rule
+  `csrf` is written for it (if that write fails, the failure is logged and the request is
+  refused all the same); it does not count as use of the session. A request from a foreign
+  origin that is not on the allow-list never gets that far: it is refused by the CORS rule before authentication,
   counted in the metric `memhouse_refused_total{kind="cors"}`, and not audited.
 - **A key in the header wins.** The cookie is read only when the request carries no
   `Authorization` or `x-api-key`. API clients are not affected by any of this.
@@ -231,8 +234,9 @@ can read it, pages without a Content-Security-Policy, and an API open to every o
   most once per interval (a twentieth of the limit, at most a minute), and the limit allows
   for that interval: a session never ends before `session_idle_secs` have passed since its
   last accepted request, and at most a minute after.
-- **A store that does not answer ends no session.** When the database cannot be read, the
-  request is refused (`401`, "session store unavailable") and the session is kept.
+- **A store that does not answer ends no session.** When the database cannot be read, or
+  the session's last use cannot be written when that is due, the request is refused (`401`,
+  "session store unavailable") and the session is kept.
 - **Restart.** Sessions are rows in the database, so they survive a restart of `memhouse
   serve` and are valid on every replica. Rows are deleted at logout, when a session past its
   end is presented, and by the hourly retention pass.
@@ -269,11 +273,15 @@ browser's and are not affected.
 The server must know its own origin to tell the console's requests from another page's. One
 of two:
 
-- the proxy passes the public host on as `Host` (`proxy_set_header Host $host;` in nginx;
-  Caddy does it by default). The origin is then `https://<Host>`;
-- or `[server] public_url = "https://memhouse.example.com"` states it. Use this when the
-  proxy sends another `Host` upstream. It also makes the session cookie the `Secure` one
-  whatever the upstream `Host` is.
+- the proxy passes the public host on as `Host`, port included (`proxy_set_header Host
+  $http_host;` in nginx; Caddy does it by default). The origin is then `https://<Host>`.
+  nginx's `$host` leaves the port out, which is right only on port 443;
+- or `[server] public_url = "https://memhouse.example.com"` states it. It is then the only
+  origin the console is used from: a browser pointed straight at the upstream
+  (`http://localhost:7077`) is refused, while clients that are not browsers are not affected. Use this when the
+  proxy sends another `Host` upstream, a non-default port included
+  (`https://memhouse.example.com:8443`). Under the default cookie mode it also makes the
+  session cookie the `Secure` one whatever the upstream `Host` is.
 
 Forwarding headers (`X-Forwarded-Host`, `Forwarded`) are not read: nothing tells the server
 that a proxy set them. With neither of the two, the console's own requests look foreign and

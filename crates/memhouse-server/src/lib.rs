@@ -222,11 +222,16 @@ async fn auth(State(st): State<AppState>, mut req: Request, next: Next) -> Respo
                     return (StatusCode::FORBIDDEN, Json(ErrorBody { error: why.into(), code: ErrorCode::Forbidden })).into_response();
                 }
                 // Only a request that got this far counts as use: a refused one above does
-                // not push the idle limit out.
-                st.engine.auth.session_used(&session).await;
-                req.extensions_mut().insert(id);
-                req.extensions_mut().insert(console::SessionCtx { secret, expires_at: session.expires_at });
-                return next.run(req).await;
+                // not push the idle limit out. And a use that cannot be recorded is not
+                // accepted, or the session could end before its idle limit after this request.
+                match st.engine.auth.session_used(&session).await {
+                    Ok(()) => {
+                        req.extensions_mut().insert(id);
+                        req.extensions_mut().insert(console::SessionCtx { secret, expires_at: session.expires_at });
+                        return next.run(req).await;
+                    }
+                    Err(f) => f,
+                }
             }
             Err(f) => f,
         },

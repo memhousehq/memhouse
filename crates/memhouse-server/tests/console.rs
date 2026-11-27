@@ -230,7 +230,13 @@ async fn a_session_is_a_cookie_script_cannot_read_and_ends_on_logout_expiry_and_
     // A request the guard refuses is not use: it leaves the stored time where it was.
     let forged = send(&s, "POST", "/v1/remember", &[("cookie", &session.cookie)], Some(json!({ "subject": "user:ada", "content": "forged" }))).await;
     assert_eq!(forged.status, 403);
-    assert_eq!(s.engine.store.session_get(&id).await.unwrap().unwrap().last_seen_at, row.last_seen_at, "a refused request extended the idle limit");
+    // Compared in microseconds: a store keeps no more, and the clock of some systems gives
+    // nanoseconds.
+    assert_eq!(
+        s.engine.store.session_get(&id).await.unwrap().unwrap().last_seen_at.timestamp_micros(),
+        row.last_seen_at.timestamp_micros(),
+        "a refused request extended the idle limit"
+    );
     // An accepted one is, and moves it to now.
     assert_eq!(as_page(&s, &session, "GET", "/v1/session", None).await.status, 200, "ended before the idle limit");
     assert!(s.engine.store.session_get(&id).await.unwrap().unwrap().last_seen_at > row.last_seen_at + chrono::Duration::seconds(idle));
@@ -595,6 +601,40 @@ async fn a_rephrasing_keeps_the_files_and_never_admits_a_record_the_reviewer_was
     assert_eq!(changed.body["flagged"], 1, "{}", changed.text);
     assert!(as_page(&s, &admin, "GET", &format!("/v1/memories/{new_id}"), None).await.body["stale_since"].is_string(), "the replacement did not go stale with its file");
 
+    // A file reported changed while a candidate waits makes its reference stale; the
+    // replacement of that candidate is as stale, at once and not at the next report.
+    let waiting = as_agent(json!({ "subject": "repo:api", "kind": "procedural", "content": "Bump the wire version when the frame layout changes",
+        "code_refs": [{ "path": "src/frame.rs", "blob_hash": "f1" }, { "path": "src/gone.rs", "blob_hash": "g1" }], "wait": true }))
+    .await;
+    assert_eq!(waiting.body["status"], "candidate", "{}", waiting.text);
+    let before = as_page(
+        &s,
+        &admin,
+        "POST",
+        "/v1/code/changed",
+        Some(json!({ "subject": "repo:api", "files": [{ "path": "src/frame.rs", "blob_hash": "f2" }, { "path": "src/gone.rs", "deleted": true }] })),
+    )
+    .await;
+    assert_eq!(before.status, 200, "{}", before.text);
+    let late = as_page(
+        &s,
+        &admin,
+        "POST",
+        "/v1/review",
+        Some(json!({ "id": waiting.body["id"], "action": "commit", "content": "A change of the frame layout needs a new wire version" })),
+    )
+    .await;
+    assert_eq!((late.status, late.body["status"].as_str()), (200, Some("committed")), "{}", late.text);
+    let late_id: uuid::Uuid = late.body["id"].as_str().unwrap().parse().unwrap();
+    let late_refs = s.engine.store.representations(&tenant, late_id).await.unwrap().1;
+    assert_eq!(
+        late_refs.iter().map(|c| (c.path.as_str(), c.blob_hash.as_str(), c.stale_since.is_some(), c.seen_hash.as_deref())).collect::<Vec<_>>(),
+        [("src/frame.rs", "f1", true, Some("f2")), ("src/gone.rs", "g1", true, None)],
+        "the replacement of a record whose files changed while it waited starts fresh"
+    );
+    let recalled = as_page(&s, &admin, "POST", "/v1/recall", Some(json!({ "subject": "repo:api", "query": "frame layout wire version", "k": 10 }))).await;
+    assert!(recalled.body["hits"].as_array().unwrap().iter().all(|h| h["memory"]["id"] != late.body["id"]), "a stale replacement was recalled: {}", recalled.text);
+
     // A reviewer who is denied a label reviews a quarantined record without it. A candidate
     // with the same words exists under that label. Rephrasing into those words must not
     // commit that candidate, nor say which record it is.
@@ -669,6 +709,19 @@ async fn behind_a_proxy_the_origin_and_the_cookie_come_from_the_configured_publi
     let bearer = format!("Bearer {key}");
     let r = send(&unset, "POST", "/v1/session", &[("authorization", &bearer), ("host", upstream), ("x-forwarded-host", "memhouse.example.com"), ("origin", public)], None).await;
     assert!(r.status == 403 && r.headers.get("set-cookie").is_none(), "X-Forwarded-Host was trusted: {}", r.status);
+    // The public origin on the CORS allow-list is a page that may call the API with its key.
+    // It is still not the console: no session, and so no plain cookie, is issued to it over
+    // a loopback Host.
+    let listed = server(|c| c.server.cors_origins = vec![public.into()]).await;
+    let key2 = key_for(&listed, "admin:root", PrincipalKind::Admin, None).await;
+    let bearer2 = format!("Bearer {key2}");
+    let api = send(&listed, "GET", "/v1/whoami", &[("authorization", &bearer2), ("host", upstream), ("origin", public)], None).await;
+    assert_eq!(api.status, 200, "a listed origin's call with a key");
+    let open = send(&listed, "POST", "/v1/session", &[("authorization", &bearer2), ("host", upstream), ("origin", public)], None).await;
+    assert!(open.status == 403 && open.headers.get("set-cookie").is_none(), "a listed origin opened a session: {}", open.status);
+    // With public_url set, the Host of a request is no second own origin.
+    let direct = send(&proxied, "GET", "/v1/whoami", &[("authorization", &bearer), ("host", "localhost:7077"), ("origin", "http://localhost:7077")], None).await;
+    assert_eq!(direct.status, 403, "the Host fallback applied beside public_url");
     // A proxy that passes Host on needs no setting: HTTPS on the public host is the own origin, HTTP is not.
     let https = send(&unset, "GET", "/v1/whoami", &[("authorization", &bearer), ("host", "memhouse.example.com"), ("origin", public)], None).await.status;
     let http = send(&unset, "GET", "/v1/whoami", &[("authorization", &bearer), ("host", "memhouse.example.com"), ("origin", "http://memhouse.example.com")], None).await.status;

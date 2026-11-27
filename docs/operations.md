@@ -229,15 +229,16 @@ server {
     client_max_body_size 5m;          # large ingest batches
     location / {
         proxy_pass http://127.0.0.1:7077;
-        proxy_set_header Host $host;
+        proxy_set_header Host $http_host;   # the public host with its port, as the browser sent it
         proxy_read_timeout 60s;
     }
 }
 ```
 
 **Tell the server its origin.** The server refuses a browser request whose `Origin` is not
-its own. It takes its own from the `Host` header: `proxy_set_header Host $host;` above
-passes it on, and Caddy does by default. If your proxy sends another `Host` upstream, set
+its own. It takes its own from the `Host` header: `proxy_set_header Host $http_host;` above
+passes it on with its port (`$host` drops the port, which breaks a console on a port other
+than 443), and Caddy does by default. If your proxy sends another `Host` upstream, set
 `[server] public_url = "https://memory.example.com"` instead
 ([configuration.md](configuration.md#server)). `X-Forwarded-Host` is not read. With neither,
 the console's own requests are refused with `403`.

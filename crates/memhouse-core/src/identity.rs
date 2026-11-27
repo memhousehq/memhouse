@@ -210,6 +210,10 @@ pub fn session_touch_secs(idle_secs: u64) -> i64 {
     ((idle_secs / 20) as i64).clamp(1, SESSION_TOUCH_SECS)
 }
 
+/// Why a credential is refused when the store did not answer a lookup: nothing is known
+/// about the key or the principal, so nothing is concluded (a session is kept).
+pub const STORE_UNAVAILABLE: &str = "session store unavailable";
+
 /// The prefix of a session secret, as the cookie carries it.
 pub const SESSION_PREFIX: &str = "mhs_";
 
@@ -593,7 +597,7 @@ impl Authenticator {
         let s = match self.store.session_get(&id).await {
             Ok(Some(s)) => s,
             Ok(None) => return Err(fail("unknown session", None)),
-            Err(_) => return Err(fail("session store unavailable", None)),
+            Err(_) => return Err(fail(STORE_UNAVAILABLE, None)),
         };
         let now = Utc::now();
         // Never early: the stored last use may be older than the real one by the touch
@@ -607,7 +611,7 @@ impl Authenticator {
         }
         // A lookup that fails says nothing about the session: it is kept, and the request
         // refused for now. Only an answer that the key or principal is gone ends it.
-        let unavailable = || fail("session store unavailable", Some(&s));
+        let unavailable = || fail(STORE_UNAVAILABLE, Some(&s));
         let mut who = if s.key_id == BOOTSTRAP {
             let Some((kid, _)) = s.key_check.as_deref().and_then(|c| c.split_once('.')) else {
                 let _ = self.store.session_delete(&id).await;
@@ -635,12 +639,10 @@ impl Authenticator {
                 }
                 Err(_) => return Err(unavailable()),
             };
-            // Read here as well, to tell a principal that is gone from a store that did not answer.
-            if self.store.principal_get(&key.principal_id).await.is_err() {
-                return Err(unavailable());
-            }
             match self.key_identity(&key, asserted_user).await {
                 Ok(who) => who,
+                // The one lookup of the principal did not answer: that says nothing about it.
+                Err(f) if f.reason == STORE_UNAVAILABLE => return Err(unavailable()),
                 // The user the request asserts is the request's fault, not the session's.
                 Err(f) if !matches!(f.reason, "revoked key" | "expired key" | "disabled principal" | "unknown principal") => return Err(f),
                 Err(f) => {
@@ -656,14 +658,18 @@ impl Authenticator {
 
     /// Record that a session was used by a request the server accepted. Called after the
     /// request passed the console's origin and CSRF rules: a refused request does not keep a
-    /// session alive. Written at most once per touch interval.
-    pub async fn session_used(&self, s: &Session) {
+    /// session alive. Written at most once per touch interval. When the write is due and
+    /// fails, the request is refused (the session is kept): accepting it would leave the stored
+    /// time behind the real last use by more than the idle check allows for.
+    pub async fn session_used(&self, s: &Session) -> Result<(), AuthFailure> {
         let now = Utc::now();
         if (now - s.last_seen_at).num_seconds() >= session_touch_secs(self.cfg.server.session_idle_secs) {
             if let Err(e) = self.store.session_touch(&s.id, now).await {
                 tracing::warn!("session last-seen time not written: {e:#}");
+                return Err(AuthFailure { reason: STORE_UNAVAILABLE, key_id: Some(s.key_id.clone()), principal: Some(s.principal_id.clone()) });
             }
         }
+        Ok(())
     }
 
     /// End a session (log out). False when there was none.
@@ -675,7 +681,9 @@ impl Authenticator {
         match self.store.principal_get(id).await {
             Ok(Some(p)) if p.disabled_at.is_none() => Ok(p),
             Ok(Some(_)) => Err("disabled principal"),
-            _ => Err("unknown principal"),
+            Ok(None) => Err("unknown principal"),
+            // Not the same as a principal that is gone: a session is not ended for it.
+            Err(_) => Err(STORE_UNAVAILABLE),
         }
     }
 

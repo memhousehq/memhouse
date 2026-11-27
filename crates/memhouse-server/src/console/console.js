@@ -14,7 +14,7 @@
 // an earlier one is dropped, so nothing of one principal's session reaches the next one's page.
 // `listing` counts requests for the memory list, so a late answer for another subject or
 // filter does not replace the list on screen.
-const state = { csrf: '', session: null, subject: null, cursor: null, queueCursor: null, epoch: 0, listing: 0 };
+const state = { csrf: '', session: null, subject: null, cursor: null, queueCursor: null, epoch: 0, listing: 0, loggingIn: false };
 
 // Thrown for an answer that arrived after its session ended; nothing is shown for it.
 class Stale extends Error {}
@@ -181,7 +181,11 @@ async function login(ev) {
   const field = $('login-key');
   const key = field.value.trim();
   field.value = '';
-  if (!key) return;
+  // One login at a time, from the request to the page it shows: of two answers the browser
+  // keeps the cookie of whichever arrived last, which need not be the one shown last.
+  if (!key || state.loggingIn) return;
+  state.loggingIn = true;
+  $('login-submit').disabled = true;
   try {
     const resp = await fetch('/v1/session', { method: 'POST', headers: { authorization: `Bearer ${key}` }, credentials: 'same-origin', cache: 'no-store', redirect: 'error' });
     const data = await resp.json().catch(() => null);
@@ -189,6 +193,9 @@ async function login(ev) {
     showApp(data);
   } catch (e) {
     $('login-error').textContent = e.message;
+  } finally {
+    state.loggingIn = false;
+    $('login-submit').disabled = false;
   }
 }
 

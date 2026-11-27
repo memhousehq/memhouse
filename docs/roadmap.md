@@ -2369,6 +2369,51 @@ against the code; what changed:
   on `DELETE /v1/session` only: every operation takes the session cookie, and listing the
   header on each would put it in every SDK method, for clients that authenticate with keys.
 
+**Review fixes, second round (2026-11-27):** the findings on the first round's commit, and
+one failure of the hosted checks; what changed:
+
+- **Hosted CI (Linux).** The console's integration test compared a session's last use read
+  back from the store, which keeps microseconds, with the value it had written from the
+  clock, which gives nanoseconds on Linux and microseconds on macOS, so it passed only on
+  the Mac. The test compares microseconds, and the governance scenario takes its time in
+  microseconds. The other comparisons this goal added between a stored time and a clock time
+  (the store kit, the schema upgrade check, the Lite upgrade test) already built their
+  times in microseconds.
+- **A store that does not answer ends no session, for the principal too.** The session's
+  principal is read once, and a lookup that fails is told apart from a principal that is
+  gone (`live_principal` answered "unknown principal" for both, and the session was deleted).
+  `console_session` takes the principals table away behind the store's back: the request
+  is refused, the session's row stays, and the session works again with the table back.
+- **A use that cannot be recorded is not accepted.** When the write of a session's last use
+  is due and fails, the request is refused (and the session kept) instead of accepted with
+  the stored time left behind, which could end the session before its idle limit.
+- **`public_url` with letters outside ASCII** no longer panics the origin parser (it cut the
+  string at a byte offset); the page scan finds a tag's end outside quoted attribute values
+  (`<p title="a > b" style=…>` hid the `style`).
+- **The page** runs one login at a time: of two overlapping answers the browser keeps the
+  cookie of the last to arrive, which need not be the session the page showed.
+- **Checks.** The advisor's check sets the advisor's settings itself; `quarantine_review`
+  requires the wording the gate held to be stored as one rejected record; no session answer
+  is printed in a failure message.
+- **Docs.** The `Secure` cookie with an `https` `public_url` is stated for the `auto` and
+  `always` modes (`never` overrides it); the nginx example passes `$http_host`, since `$host`
+  drops the port and a console on another port than 443 was refused; a held rephrasing is
+  said to leave a rejected record; the audit of a refused session request is said to be
+  attempted, and the CORS refusal to be of an unlisted foreign origin.
+- **The own origin, again.** With `public_url` set it is the only own origin (the `Host`
+  fallback still applied beside it, so `http://localhost` passed against
+  `public_url = "https://localhost"`). `POST /v1/session` from a browser is answered only
+  for the console's own origin: a public origin on `cors_origins`, over a loopback upstream
+  `Host` and without `public_url`, got the plain cookie issued.
+- **A rephrased record whose files changed while it waited** starts as stale as the record
+  it replaces: the files' last seen states are observed again after the write (a writer
+  cannot set a reference stale).
+- The TypeScript client's `rotateKey` takes its body as an optional argument.
+- **Not done:** no test fails the write of a session's last use (taking the session table
+  away fails the read before it); the rule is three lines in `session_used`.
+- Governance: 85 checks, store kit 20; the new cases are scenarios of `console_session`,
+  `quarantine_review` and `profile_advisor`.
+
 #### G21 — Packaging and release v1 (developer launch)
 
 - [ ] **Done**
