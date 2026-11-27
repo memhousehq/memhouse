@@ -49,6 +49,11 @@ pub enum Operation {
     Promote,
     /// Create, list or revoke grants between agents (INT-06).
     GrantManage,
+    /// Report what files of a repository were seen as: marks the memories linked to them
+    /// stale, or no longer stale (TPL-04).
+    CodeObserve,
+    /// Confirm that a stale memory still holds for its files as they are now (TPL-04).
+    Revalidate,
 }
 
 impl Operation {
@@ -60,7 +65,7 @@ impl Operation {
     }
 
     pub fn is_write(&self) -> bool {
-        matches!(self, Operation::Remember | Operation::Revise | Operation::Ingest | Operation::Relabel | Operation::Promote)
+        matches!(self, Operation::Remember | Operation::Revise | Operation::Ingest | Operation::Relabel | Operation::Promote | Operation::CodeObserve | Operation::Revalidate)
     }
 
     pub fn is_read(&self) -> bool {
@@ -176,7 +181,8 @@ impl ScopeAuthorizer {
         let own = |v: &Option<String>| v.is_some() && *v == req.target;
         Some(match req.op? {
             Operation::Recall | Operation::Get | Operation::List | Operation::Explain => perm::READ,
-            Operation::Remember | Operation::Revise | Operation::Ingest | Operation::Promote => perm::WRITE,
+            // Staleness decides what default recall returns, so marking and clearing it is a write.
+            Operation::Remember | Operation::Revise | Operation::Ingest | Operation::Promote | Operation::CodeObserve | Operation::Revalidate => perm::WRITE,
             Operation::GrantManage => perm::GRANT,
             Operation::Forget(ForgetScope::Record) => perm::FORGET,
             Operation::Forget(ForgetScope::User) if own(&who.user) => perm::FORGET,
@@ -252,7 +258,7 @@ impl Authorizer for ScopeAuthorizer {
             }
         }
         if let Some(s) = &req.subject {
-            let by_id = matches!(op, Operation::Remember | Operation::Get | Operation::Revise | Operation::Forget(ForgetScope::Record));
+            let by_id = matches!(op, Operation::Remember | Operation::Get | Operation::Revise | Operation::Revalidate | Operation::Forget(ForgetScope::Record));
             let own = req.own_partition && by_id && who.user.as_ref() == Some(s);
             if !own && !p.may_use_subject(s) {
                 return deny(d, "subject", format!("subject {s} is outside this principal's subjects"));

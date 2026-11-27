@@ -36,6 +36,8 @@ fn filters(no_session: bool) -> String {
     AND (:windows IS NULL OR EXISTS (
       SELECT 1 FROM json_each(:windows) w
       WHERE m.occurred_at >= json_extract(w.value, '$[0]') AND m.occurred_at < json_extract(w.value, '$[1]')))
+    -- A record about a file that changed since is left out until it is revalidated (TPL-04).
+    AND (:stale OR m.stale_since IS NULL)
 "#
     )
 }
@@ -68,6 +70,7 @@ pub(crate) fn recall_params(q: &SearchQuery) -> anyhow::Result<Vec<(&'static str
         (":candidates", Value::Integer(q.include_candidates as i64)),
         (":shared", Value::Text(json(&q.shared_agents)?)),
         (":windows", if windows.is_empty() { Value::Null } else { Value::Text(json(&windows)?) }),
+        (":stale", Value::Integer(q.include_stale as i64)),
     ])
 }
 

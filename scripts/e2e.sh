@@ -117,6 +117,28 @@ if [ -d "$MEMHOUSE_HOME/models" ]; then ln -s "$MEMHOUSE_HOME/models" "$LITE_HOM
   "$BIN" recall "How many loading docks?" -s lite:e2e | grep "$KEPT" >/dev/null
   if "$BIN" recall "When is the forklift serviced?" -s lite:e2e | grep "$GONE" >/dev/null; then echo "a restore brought back a deleted record"; exit 1; fi
   "$BIN" doctor | grep "audit chain intact" >/dev/null
+  # The coding template's hooks (G19), in process on this Lite file, with an agent's own key: a
+  # memory linked to a file reaches the harness when the file is read, an edit holds it back,
+  # and a hook that MemHouse refuses adds nothing and still exits 0.
+  REPO="$LITE_HOME/shop"
+  mkdir -p "$REPO/src" "$REPO/.git"
+  printf 'fn pay() {}\n' > "$REPO/src/pay.rs"
+  "$BIN" remember "Payments are settled in integer cents." --file "$REPO/src/pay.rs" | grep '"status": "committed"' >/dev/null
+  "$BIN" principal add agent:hooks --subject 'repo:*' >/dev/null
+  (umask 077; "$BIN" key create agent:hooks 2>/dev/null > "$LITE_HOME/hooks.key")
+  READ='{"hook_event_name":"PostToolUse","cwd":"'"$REPO"'","tool_name":"Read","tool_input":{"file_path":"'"$REPO"'/src/pay.rs"}}'
+  EDIT='{"hook_event_name":"AfterTool","cwd":"'"$REPO"'","tool_name":"replace","tool_input":{"file_path":"src/pay.rs"}}'
+  SAID=$(echo "$READ" | "$BIN" hook file-opened --format claude-code --key-file "$LITE_HOME/hooks.key")
+  echo "$SAID" | grep '"hookEventName":"PostToolUse"' >/dev/null
+  echo "$SAID" | grep 'integer cents' >/dev/null
+  printf 'fn pay() { todo!() }\n' > "$REPO/src/pay.rs"
+  SAID=$(echo "$EDIT" | "$BIN" hook file-edited --format gemini --key-file "$LITE_HOME/hooks.key")
+  echo "$SAID" | grep '"hookEventName":"AfterTool"' >/dev/null
+  echo "$SAID" | grep 'earlier version' >/dev/null
+  if "$BIN" recall "payments settled in cents" -s repo:shop | grep "integer cents" >/dev/null; then echo "a memory about a changed file was recalled"; exit 1; fi
+  "$BIN" audit --limit 5 | grep memory.stale >/dev/null
+  echo "mh_not_a_key" > "$LITE_HOME/wrong.key"
+  test -z "$(echo "$READ" | "$BIN" hook file-opened --key-file "$LITE_HOME/wrong.key" 2>/dev/null)"
   # A migration to another file: verified, the configuration switched, the data and chain there.
   "$BIN" migrate --to "sqlite:$LITE_HOME/moved/memhouse.db" --dry-run | grep "Needs attention: nothing" >/dev/null
   "$BIN" migrate --to "sqlite:$LITE_HOME/moved/memhouse.db" --yes | grep "now names the target" >/dev/null

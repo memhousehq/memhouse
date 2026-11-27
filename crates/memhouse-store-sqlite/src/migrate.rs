@@ -16,7 +16,7 @@ pub(crate) struct Step {
 
 /// In version order, without gaps. A file is upgraded by every step above its version; what a
 /// step adds is also in `schema::DDL`, which creates a new file at the current version.
-pub(crate) const STEPS: &[Step] = &[Step { to: 9, what: "the record's language", run: add_language }];
+pub(crate) const STEPS: &[Step] = &[Step { to: 9, what: "the record's language", run: add_language }, Step { to: 10, what: "staleness of code references", run: add_staleness }];
 
 /// The oldest version the steps start from.
 pub(crate) fn oldest() -> u32 {
@@ -31,6 +31,17 @@ fn has_column(c: &Connection, table: &str, column: &str) -> anyhow::Result<bool>
 fn add_language(c: &Connection) -> anyhow::Result<()> {
     if !has_column(c, "mh_memory", "language")? {
         exec(c, "ALTER TABLE mh_memory ADD COLUMN language TEXT", [])?;
+    }
+    Ok(())
+}
+
+/// Version 10: since when a code reference is stale and the hash last seen, and the earliest
+/// of them on the record. Absent (not stale) on everything written before.
+fn add_staleness(c: &Connection) -> anyhow::Result<()> {
+    for (table, column, ty) in [("mh_code_ref", "stale_since", "INTEGER"), ("mh_code_ref", "seen_hash", "TEXT"), ("mh_memory", "stale_since", "INTEGER")] {
+        if !has_column(c, table, column)? {
+            exec(c, &format!("ALTER TABLE {table} ADD COLUMN {column} {ty}"), [])?;
+        }
     }
     Ok(())
 }
@@ -121,6 +132,7 @@ mod tests {
             scope: Scope::default(),
             provenance: Provenance::default(),
             language: None,
+            stale_since: None,
         };
         let hash = memhouse_core::engine::content_hash(&m.content);
         let mut n = NewMemory::new(m, hash);
@@ -128,11 +140,17 @@ mod tests {
         n
     }
 
-    /// Take a file of this build back to logical schema version 8, which differs from 9 by the
-    /// `language` column alone (`docs/schema.md`): the file a version-8 Lite build would have left.
+    /// Take a file of this build back to logical schema version 8, which differs from the
+    /// current one by the `language` column (version 9) and the staleness columns (version 10,
+    /// `docs/schema.md`): the file a version-8 Lite build would have left.
     fn make_version_8(path: &Path) {
         let c = Connection::open(path).unwrap();
-        c.execute_batch("ALTER TABLE mh_memory DROP COLUMN language; UPDATE mh_meta SET value = '8' WHERE key = 'schema_version';").unwrap();
+        c.execute_batch(
+            "ALTER TABLE mh_memory DROP COLUMN language; ALTER TABLE mh_memory DROP COLUMN stale_since; \
+             ALTER TABLE mh_code_ref DROP COLUMN stale_since; ALTER TABLE mh_code_ref DROP COLUMN seen_hash; \
+             UPDATE mh_meta SET value = '8' WHERE key = 'schema_version';",
+        )
+        .unwrap();
     }
 
     fn snapshots(dir: &Path) -> Vec<PathBuf> {
@@ -177,7 +195,7 @@ mod tests {
         assert_eq!(version_of(&copies[0]), "8");
         let old = Connection::open(&copies[0]).unwrap();
         let columns: Vec<String> = old.prepare("SELECT name FROM pragma_table_info('mh_memory')").unwrap().query_map([], |r| r.get(0)).unwrap().collect::<Result<_, _>>().unwrap();
-        assert!(!columns.contains(&"language".to_string()));
+        assert!(!columns.contains(&"language".to_string()) && !columns.contains(&"stale_since".to_string()));
         assert_eq!(old.query_row("SELECT count(*) FROM mh_memory", [], |r| r.get::<_, i64>(0)).unwrap(), 2);
 
         // The upgraded file: the current version, the data intact and readable, keywords and audit chain included.
@@ -194,6 +212,12 @@ mod tests {
         c.memory.language = Some("de".into());
         store.insert(std::slice::from_ref(&c)).await.unwrap();
         assert_eq!(store.get("acme", c.memory.id).await.unwrap().unwrap().language.as_deref(), Some("de"));
+        // And what version 10 added: a reference goes stale when its file is seen changed.
+        let mut d = record("The parser lives in src/parse.rs");
+        d.code_refs = vec![CodeRef::new("src/parse.rs", "h1")];
+        store.insert(std::slice::from_ref(&d)).await.unwrap();
+        let flagged = store.code_refs_observe("acme", "user:ada", &[FileState::present("src/parse.rs", "h2")], Utc::now()).await.unwrap();
+        assert!(flagged.len() == 1 && flagged[0].flagged && store.get("acme", d.memory.id).await.unwrap().unwrap().stale_since.is_some());
 
         // Opening it again upgrades nothing and copies nothing.
         drop(store);

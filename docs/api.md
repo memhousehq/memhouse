@@ -20,13 +20,13 @@ flowchart LR
     E --> R[Hybrid recall] --> P
 ```
 
-This is **API v1**, version `1.8.0` (1.1 added principals, agent tokens, review and labels; 1.2
+This is **API v1**, version `1.9.0` (1.1 added principals, agent tokens, review and labels; 1.2
 added recall explanations and `/metrics`; 1.3 added policies; 1.4 the write pipeline: `wait`,
 `include_candidates`, exact recall, `degraded` and the `unavailable` code; 1.5 memory types:
 session working memory, scope inheritance and preferences, promotion and grants; 1.6 ranking and
 packing: `render_format`, the `duplicate` exclusion reason, score features in explanations, and
 the token budget as a hard cap; 1.7 the evaluation gate: `write_gate.corrections` in a policy
-spec, and an approval refused with `409` when the tenant's suites degrade; 1.8 languages: `language` on a record and `language.enabled` in a policy spec). The machine-readable contract is the OpenAPI 3.1 document at
+spec, and an approval refused with `409` when the tenant's suites degrade; 1.8 languages: `language` on a record and `language.enabled` in a policy spec; 1.9 the coding template: `POST /v1/code/touched`, `/v1/code/changed` and `/v1/code/revalidate`, `stale_since` on a record, `include_stale` and `paths` on a recall, and the `stale` and `task` exclusion reasons). The machine-readable contract is the OpenAPI 3.1 document at
 `GET /v1/openapi.json`, also kept in the repository as [`api/openapi.json`](../api/openapi.json)
 and printed by `memhouse openapi`. It is generated from the request and response types, so it
 can't drift from the code. What may change, and how changes are announced, is in the
@@ -43,6 +43,7 @@ run to run.
 - [Reading records](#reading-records): get, list
 - [Labels and review](#labels-and-review): relabel, commit or reject a candidate
 - [Memory types](#memory-types): promote, preferences by scope, grants between agents
+- [Code](#code): memories linked to files, staleness, file-touched recall, revalidation
 - [Identity](#identity): who am I, agent tokens
 - [Policies](#policies): validate, propose, diff, approve, roll back
 - [Operations](#operations): subjects, stats, audit, enrichment status, health
@@ -184,6 +185,7 @@ ignored.
 | `scope` | `{org, team, agent, user, session}`, see [Scopes](#conventions). |
 | `provenance` | `agent` (writer), `user` (acting user), `policy_version` (the policy that admitted it), `request_key`, and for extracted facts `extractor` and `extractor_config`. |
 | `language` | The language the text was detected as, among the server's enabled ones: a [language pack](languages.md) code such as `en` or `de`. Absent on records written before API 1.8. |
+| `stale_since` | Set while a file the memory is about has other content than when the memory was written or last revalidated ([Code](#code)): the memory is left out of default recall. From API 1.9. |
 
 Fields that are empty or unset are left out of the JSON.
 
@@ -212,7 +214,7 @@ Body (`RememberRequest`):
 | `user` | string | | the user the agent acts for (provenance) |
 | `request_key` | string | | idempotency key, or the `Idempotency-Key` header |
 | `structured` | `{record_type, attrs}` | | the queryable form of a record (an order, a ticket); same id as the text |
-| `code_refs` | `{path, blob_hash}[]` | | files the memory is about, for staleness checks |
+| `code_refs` | `{path, blob_hash}[]` | | files the memory is about, each with its content hash (the git blob hash, `git hash-object <path>`). When a file changes, the memory is [stale](#code). Paths are stored relative to the repository root with `/` separators (`./src//a.rs` becomes `src/a.rs`); a path that leaves the repository (`..`) is refused. At most 200 |
 | `source` | string | | defaults to the actor |
 | `metadata` | object | | stored as given |
 | `supersedes` | uuid | | replace this memory; prefer [`revise`](#post-v1revise-supersede-a-memory) |
@@ -304,6 +306,8 @@ A write the intake queue can't take (the database is down) is refused with `503 
 | `analyze` | bool | config | date-aware query analysis on or off; it also finds record identifiers for the exact probe |
 | `include_candidates` | bool | false | also return candidates (held plans and speculation, proposals waiting for review), each with `status: candidate` (PR-7) |
 | `exact` | `{record_type?, attrs}` | none | an exact query over structured records, answered first (see below) |
+| `include_stale` | bool | false | also return memories whose file changed since they were written, each marked by `stale_since` ([Code](#code)). A recall with `as_of` is not filtered by staleness |
+| `paths` | string[] | none | files the task at hand touches: a procedure linked to one of them matches the task whatever the query says ([task-matched retrieval](memory-types.md#task-matched-retrieval)) |
 
 ```bash
 curl -s localhost:7077/v1/recall -H "authorization: Bearer $KEY" -H "content-type: application/json" -d '{
@@ -493,6 +497,8 @@ The explanation of a recall (GOV-04), by its `recall_id`. It holds:
 | `filter` | outside the request's kinds or tags |
 | `duplicate` | a near-duplicate of a better-ranked memory in the same recall (`detail`: the measure, the other record's id and the threshold) |
 | `budget` | cut by `token_budget` |
+| `stale` | a file the memory is about changed since it was written or last revalidated ([Code](#code)) |
+| `task` | a procedure that does not match the task the recall is for ([task-matched retrieval](memory-types.md#task-matched-retrieval)) |
 | `rank` | below the `k` returned |
 
 ```json
@@ -757,6 +763,110 @@ or promote them. `grant:manage` is a permission of admins.
 
 ---
 
+## Code
+
+A memory about code names the files it is about (`code_refs` on `remember` and `revise`), each
+with the content hash the file had. When a file is seen with other content, deleted, or renamed
+with other content, the memory is **stale**: it is left out of default recall until it is
+revalidated, revised or forgotten (TPL-04). These three routes are what the
+[harness hooks](coding.md) call; the guide has the whole flow.
+
+A file is given as a `FileState`:
+
+| Field | Notes |
+|---|---|
+| `path` | relative to the repository root, `/` separators (normalized as for `code_refs`) |
+| `blob_hash` | the file's current content hash. Without it (and without `deleted`) the file is only looked up: nothing is recorded about it |
+| `deleted` | the file no longer exists; no `blob_hash` |
+| `renamed_from` | the path the file had before; needs `blob_hash`. References move to the new path, and are stale only if the content changed too |
+
+At most 1,000 files in one request.
+
+### `POST /v1/code/touched`: memories linked to files an agent opened or edited
+
+Body (`FileTouchedRequest`): `subject`, `files`\*, `event` (`opened`, the default, or `edited`),
+`query`, `scope`, `render`.
+
+First the staleness of the memories linked to the files is updated from the hashes: a reference
+whose stored hash differs becomes stale; one whose file has its stored content again stops being
+stale; a rename moves it. Then every linked memory the caller may recall is returned, however
+many there are (no `k`):
+
+```bash
+curl -s $MH/v1/code/touched -H "authorization: Bearer $KEY" -H 'content-type: application/json' \
+  -d '{"subject": "repo:shop", "event": "opened",
+       "files": [{"path": "src/ledger.rs", "blob_hash": "9f2c5c1e…"}]}'
+```
+
+```json
+{"memories": [{"memory": {"id": "01a2…", "kind": "semantic", "content": "Money amounts in the ledger are integer cents.", "…": "…"},
+               "code_refs": [{"path": "src/ledger.rs", "blob_hash": "9f2c5c1e…"}]}],
+ "needs_revalidation": [{"memory": {"id": "01a2…", "stale_since": "2026-11-27T10:02:11.482113Z", "…": "…"},
+                         "code_refs": [{"path": "src/ledger.rs", "blob_hash": "41d8cd98…", "stale_since": "2026-11-27T10:02:11.482113Z", "seen_hash": "9f2c5c1e…"}]}],
+ "changes": [{"id": "01a2…", "path": "src/ledger.rs", "flagged": true, "stale": true}]}
+```
+
+| Field | Meaning |
+|---|---|
+| `memories` | linked memories that are not stale, newest first, each with its references to the named files |
+| `needs_revalidation` | linked memories with a stale reference, each with all of its references (the stale one may be to another file) |
+| `changes` | what this request changed: references `flagged` stale, `cleared`, or moved (`moved_from`); `stale` says whether the memory is stale afterwards |
+| `related` | with `query`: procedures that match the task and are not linked to the files |
+| `rendered` | with `render`: `memories` and `related` as a text block |
+
+Access is that of a recall: the same permission (`memory:read`), subject, labels, kinds, scope
+and grants decide which memories are listed, so a caller learns of no memory it could not
+recall. Candidates, quarantined and expired records are never listed. The staleness is
+**recorded** only for a caller that may also write (`memory:write`): a read-only caller gets
+the same comparison for its own answer, and nothing is stored or audited. What is recorded
+applies to every memory about the file, whoever may read it: that the file changed is a fact
+about the repository. Each memory whose state changed gets an audit event: `memory.stale`,
+`memory.fresh` or `memory.code_moved`, with the event (`file.opened`, `file.edited`) in its
+detail.
+
+### `POST /v1/code/changed`: files changed, deleted or renamed
+
+Body (`FilesChangedRequest`): `subject`, `files`\*, `reason` (for the audit log: a commit id; at
+most 200 characters).
+What a post-commit hook sends, so that staleness is marked for files the agent never opened.
+Needs `memory:write`.
+
+```bash
+curl -s $MH/v1/code/changed -H "authorization: Bearer $KEY" -H 'content-type: application/json' \
+  -d '{"subject": "repo:shop", "reason": "commit 4f1c2aa",
+       "files": [{"path": "src/ledger.rs", "blob_hash": "c3ab8ff1…"},
+                 {"path": "src/old.rs", "deleted": true},
+                 {"path": "src/books.rs", "renamed_from": "src/accounts.rs", "blob_hash": "77de68da…"}]}'
+```
+
+```json
+{"changes": [{"id": "01a2…", "path": "src/ledger.rs", "flagged": true, "stale": true},
+             {"id": "01a2…", "path": "src/books.rs", "moved_from": "src/accounts.rs", "stale": false}],
+ "flagged": 1, "cleared": 0}
+```
+
+`changes`, `flagged` and `cleared` cover the memories the caller may recall (none for a caller
+without `memory:read`).
+
+### `POST /v1/code/revalidate`: confirm that a stale memory still holds
+
+Body (`RevalidateRequest`): `id`\*, `code_refs`.
+
+Without `code_refs`, every stale reference takes the hash its file was last seen with
+(`seen_hash`) and is no longer stale. With `code_refs`, those references take the given hashes
+(each `path` must be one the memory already references; to change the paths, revise it). A
+reference to a deleted file has no hash to take: `400`, and the memory is revised with new
+`code_refs`, or forgotten. Answers `{id, code_refs, stale}`; `stale` is true while another
+reference is still stale. Needs `memory:write` and sight of the memory (`404` otherwise);
+`409` for a record that is not committed. Audited as `memory.revalidate` with the old and new
+hash of each reference.
+
+Revising a stale memory also ends its staleness: the new version supersedes it. References the
+revision inherits take the hash their file was last seen with, and a reference to a deleted
+file is not carried over.
+
+---
+
 ## Identity
 
 ### `GET /v1/whoami`
@@ -870,15 +980,17 @@ also accepted. Notifications (messages without an `id`) get `202 Accepted` and n
 | Method | Result |
 |---|---|
 | `initialize` | server info, plus `instructions` written for the active [template](configuration.md#templates) |
-| `tools/list` | the six tools below, each with an `inputSchema` and an `outputSchema` |
+| `tools/list` | the eight tools below, each with an `inputSchema` and an `outputSchema` |
 | `tools/call` | a rendered text block as `content`, the REST response as `structuredContent`; errors come back as `isError: true` with the error code in the text |
 | `ping`, `resources/list`, `resources/templates/list`, `prompts/list` | empty results |
 
 | Tool | Arguments (a subset of the REST body) | Returns (`structuredContent`) |
 |---|---|---|
-| `recall` | `query`\*, `subject`, `k` (1–50), `kinds`, `tags`, `scope`, `as_of`, `token_budget`, `render_format` | `RecallResult` |
-| `remember` | `content`\*, `kind`, `subject`, `tags`, `occurred_at`, `valid_to`, `expires_at`, `labels`, `scope`, `request_key` | `RememberResult` |
-| `revise` | `id`\*, `content`\*, `kind`, `tags`, `valid_to`, `request_key` | `RememberResult` |
+| `recall` | `query`\*, `subject`, `k` (1–50), `kinds`, `tags`, `scope`, `as_of`, `token_budget`, `render_format`, `include_candidates`, `exact`, `include_stale`, `paths` | `RecallResult` |
+| `remember` | `content`\*, `kind`, `subject`, `tags`, `occurred_at`, `valid_to`, `expires_at`, `labels`, `scope`, `request_key`, `wait`, `code_refs`, `metadata` | `RememberResult` |
+| `revise` | `id`\*, `content`\*, `kind`, `tags`, `valid_to`, `request_key`, `wait`, `code_refs` | `RememberResult` |
+| `file_memories` | `files`\*, `subject`, `event`, `query`, `scope` | `FileTouchedResult` ([Code](#code)) |
+| `revalidate` | `id`\*, `code_refs` | `RevalidateResult` |
 | `forget` | one of `id`, `subject`, `user`, `agent`, `source`; `dry_run`, `request_key` | `ForgetResult` |
 | `ingest` | `messages`\*, `session_id`, `session_time`, `subject`, `request_key` | `IngestResult` |
 | `list_memories` | `subject`, `kinds`, `limit` (1–100), `cursor` | `MemoryPage` |

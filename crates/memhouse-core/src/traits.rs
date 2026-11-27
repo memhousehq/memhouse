@@ -416,6 +416,21 @@ pub trait Store: Send + Sync {
     }
     /// Code references of a subject (a repository) whose stored hash differs from the given one.
     async fn stale_code_refs(&self, tenant: &str, subject: &str, path: &str, blob_hash: &str) -> anyhow::Result<Vec<Uuid>>;
+    /// Record what files of a subject (a repository) were seen as (TPL-04, TR-TPL-02): in one
+    /// transaction, load the references at the paths of `staleness::paths_of(files)` that
+    /// belong to committed or candidate records, write what `staleness::plan` gives, and set
+    /// each touched record's `stale_since` to the earliest of its stale references (none when
+    /// no reference is stale). Returns the references that were flagged, cleared or moved,
+    /// each with its record's state afterwards. A record that is stale is left out by `search`,
+    /// `search_many` and `structured_lookup` unless the query has `include_stale`.
+    async fn code_refs_observe(&self, tenant: &str, subject: &str, files: &[FileState], at: chrono::DateTime<chrono::Utc>) -> anyhow::Result<Vec<RefChange>>;
+    /// The code references of a subject at these paths, with the id of the record each belongs
+    /// to, whatever the record's state; ordered by record id, then path.
+    async fn code_refs_at(&self, tenant: &str, subject: &str, paths: &[String]) -> anyhow::Result<Vec<(Uuid, CodeRef)>>;
+    /// Revalidate references of one record (`staleness::revalidated`): each takes its new hash
+    /// and is no longer stale, and the record's `stale_since` follows. Returns the record's
+    /// references afterwards, or `None` when the tenant has no such record.
+    async fn code_refs_revalidate(&self, tenant: &str, id: Uuid, refs: Option<&[CodeRef]>) -> anyhow::Result<Option<Vec<CodeRef>>>;
 
     // Re-embedding to another model in place (see `reembed`). Stores that can't do it say so.
     /// The identity the stored vectors were made with, and the target of an unfinished re-embedding.

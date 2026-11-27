@@ -1079,9 +1079,7 @@ impl Store for SqliteStore {
             })
         })?;
         for line in &mut lines {
-            line.code_refs = rows(&c, "SELECT path, blob_hash FROM mh_code_ref WHERE memory_id = ?1 ORDER BY path", [line.id.to_string()], |r| {
-                Ok(CodeRef { path: r.get(0)?, blob_hash: r.get(1)? })
-            })?;
+            line.code_refs = rows(&c, &format!("SELECT {CODE_REF_COLS} FROM mh_code_ref c WHERE c.memory_id = ?1 ORDER BY c.path"), [line.id.to_string()], code_ref_of)?;
         }
         Ok(lines)
     }
@@ -1261,9 +1259,9 @@ impl Store for SqliteStore {
         )?;
         let code_refs = rows(
             &c,
-            "SELECT c.path, c.blob_hash FROM mh_code_ref c JOIN mh_memory m ON m.id = c.memory_id WHERE m.tenant = ?1 AND c.memory_id = ?2 ORDER BY c.path",
+            &format!("SELECT {CODE_REF_COLS} FROM mh_code_ref c JOIN mh_memory m ON m.id = c.memory_id WHERE m.tenant = ?1 AND c.memory_id = ?2 ORDER BY c.path"),
             [tenant, ids.as_str()],
-            |r| Ok(CodeRef { path: r.get(0)?, blob_hash: r.get(1)? }),
+            code_ref_of,
         )?;
         Ok((structured, code_refs))
     }
@@ -1411,6 +1409,86 @@ impl Store for SqliteStore {
             [tenant, subject, path, blob_hash],
             |r| uuid_of(&r.get::<_, String>(0)?),
         )
+    }
+
+    #[tracing::instrument(name = "db.code_refs_observe", skip_all, fields(db.system = "sqlite", db.operation = "UPDATE", files = files.len()))]
+    async fn code_refs_observe(&self, tenant: &str, subject: &str, files: &[FileState], at: DateTime<Utc>) -> anyhow::Result<Vec<RefChange>> {
+        let paths = memhouse_core::staleness::paths_of(files);
+        if paths.is_empty() {
+            return Ok(vec![]);
+        }
+        let mut c = self.conn();
+        // The write lock from the start: what is read is what the plan is written against.
+        let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let stored = rows(
+            &tx,
+            &format!(
+                "SELECT c.memory_id, {CODE_REF_COLS} FROM mh_code_ref c JOIN mh_memory m ON m.id = c.memory_id \
+                 WHERE c.tenant = ?1 AND c.subject = ?2 AND c.path IN (SELECT value FROM json_each(?3)) AND m.tenant = ?1 AND m.status IN ('committed', 'candidate') \
+                 ORDER BY c.memory_id, c.path"
+            ),
+            params![tenant, subject, json(&paths)?],
+            |r| Ok(memhouse_core::staleness::RefRow { id: uuid_of(&r.get::<_, String>("memory_id")?)?, code: code_ref_of(r)? }),
+        )?;
+        let updates = memhouse_core::staleness::plan(&stored, files, at);
+        if updates.is_empty() {
+            return Ok(vec![]);
+        }
+        for u in updates.iter().filter(|u| u.now.is_none()) {
+            exec(&tx, "DELETE FROM mh_code_ref WHERE memory_id = ?1 AND path = ?2", params![u.id.to_string(), u.path])?;
+        }
+        for u in &updates {
+            let Some(code) = &u.now else { continue };
+            exec(
+                &tx,
+                "UPDATE mh_code_ref SET path = ?3, stale_since = ?4, seen_hash = ?5 WHERE memory_id = ?1 AND path = ?2",
+                params![u.id.to_string(), u.path, code.path, code.stale_since.map(us), code.seen_hash],
+            )?;
+        }
+        let mut stale = std::collections::HashMap::new();
+        for id in updates.iter().map(|u| u.id).collect::<HashSet<_>>() {
+            stale.insert(id, restale(&tx, tenant, id)?);
+        }
+        tx.commit()?;
+        Ok(updates
+            .into_iter()
+            .filter_map(|u| u.change)
+            .map(|mut ch| {
+                ch.stale = stale.get(&ch.id).copied().unwrap_or(false);
+                ch
+            })
+            .collect())
+    }
+
+    async fn code_refs_at(&self, tenant: &str, subject: &str, paths: &[String]) -> anyhow::Result<Vec<(Uuid, CodeRef)>> {
+        rows(
+            &self.conn(),
+            &format!(
+                "SELECT c.memory_id, {CODE_REF_COLS} FROM mh_code_ref c \
+                 WHERE c.tenant = ?1 AND c.subject = ?2 AND c.path IN (SELECT value FROM json_each(?3)) ORDER BY c.memory_id, c.path"
+            ),
+            params![tenant, subject, json(paths)?],
+            |r| Ok((uuid_of(&r.get::<_, String>("memory_id")?)?, code_ref_of(r)?)),
+        )
+    }
+
+    #[tracing::instrument(name = "db.code_refs_revalidate", skip_all, fields(db.system = "sqlite", db.operation = "UPDATE"))]
+    async fn code_refs_revalidate(&self, tenant: &str, id: Uuid, refs: Option<&[CodeRef]>) -> anyhow::Result<Option<Vec<CodeRef>>> {
+        let ids = id.to_string();
+        let sql = format!("SELECT {CODE_REF_COLS} FROM mh_code_ref c JOIN mh_memory m ON m.id = c.memory_id WHERE m.tenant = ?1 AND c.memory_id = ?2 ORDER BY c.path");
+        let mut c = self.conn();
+        let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if first(&tx, "SELECT 1 FROM mh_memory WHERE tenant = ?1 AND id = ?2", [tenant, ids.as_str()], |_| Ok(()))?.is_none() {
+            return Ok(None);
+        }
+        let stored = rows(&tx, &sql, [tenant, ids.as_str()], code_ref_of)?;
+        for code in memhouse_core::staleness::revalidated(&stored, refs)? {
+            exec(&tx, "UPDATE mh_code_ref SET blob_hash = ?3, stale_since = NULL, seen_hash = NULL WHERE memory_id = ?1 AND path = ?2", params![ids, code.path, code.blob_hash])?;
+        }
+        restale(&tx, tenant, id)?;
+        let after = rows(&tx, &sql, [tenant, ids.as_str()], code_ref_of)?;
+        tx.commit()?;
+        Ok(Some(after))
     }
 
     async fn embedding_identity(&self) -> anyhow::Result<(Option<EmbeddingIdentity>, Option<EmbeddingIdentity>)> {
@@ -1572,4 +1650,12 @@ fn forget_condition(scope: ForgetScope) -> anyhow::Result<&'static str> {
         ForgetScope::Source => "source = ?2",
         s => anyhow::bail!("no row condition for forget by {}", s.as_str()),
     })
+}
+
+/// A record is stale from the earliest time one of its references became stale (TPL-04).
+/// Returns whether it is stale now.
+fn restale(c: &Connection, tenant: &str, id: Uuid) -> anyhow::Result<bool> {
+    let ids = id.to_string();
+    exec(c, "UPDATE mh_memory SET stale_since = (SELECT min(c.stale_since) FROM mh_code_ref c WHERE c.memory_id = ?2) WHERE tenant = ?1 AND id = ?2", [tenant, ids.as_str()])?;
+    Ok(first(c, "SELECT stale_since FROM mh_memory WHERE tenant = ?1 AND id = ?2", [tenant, ids.as_str()], |r| Ok(r.get::<_, Option<i64>>(0)?))?.flatten().is_some())
 }

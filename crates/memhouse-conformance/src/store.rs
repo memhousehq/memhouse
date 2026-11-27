@@ -368,6 +368,148 @@ pub async fn run_store_kit(store: Arc<dyn Store>) -> Report {
         }
         .await,
     );
+    // Git-aware staleness (TR-TPL-02): the store applies `staleness::plan` to the references at
+    // the observed paths, keeps the record's `stale_since` in step, and filters on it.
+    let repo = "repo:kit";
+    let linked = |content: &'static str, refs: Vec<CodeRef>| {
+        let e = &e;
+        async move {
+            let written = e
+                .remember(RememberRequest {
+                    subject: Some(repo.into()),
+                    content: content.into(),
+                    code_refs: refs,
+                    actor: Some("conformance".into()),
+                    source: Some("conformance".into()),
+                    wait: true,
+                    ..Default::default()
+                })
+                .await?;
+            anyhow::ensure!(written.status == MemoryStatus::Committed, "the write was not committed: {}", written.status.as_str());
+            Ok::<Uuid, anyhow::Error>(written.id)
+        }
+    };
+    let at = chrono::DateTime::from_timestamp(1_800_000_000, 0).unwrap_or_default();
+    let stale_of = |id: Uuid| {
+        let store = &store;
+        async move { Ok::<_, anyhow::Error>(store.get(t, id).await?.and_then(|m| m.stale_since)) }
+    };
+    r.outcome(
+        "code_refs_observe_marks_staleness",
+        "a file seen with another hash, deleted, or renamed with other content makes the references to it stale, and their records with them; the stored hash seen again clears it; a rename moves the reference; nothing else changes",
+        async {
+            let parser = linked("The parser keeps its token table in a perfect hash.", vec![CodeRef::new("src/parse.rs", "p1"), CodeRef::new("src/lex.rs", "l1")]).await?;
+            let lexer = linked("The lexer never allocates on the hot path.", vec![CodeRef::new("src/lex.rs", "l1")]).await?;
+            let other = linked("The printer wraps lines at one hundred columns.", vec![CodeRef::new("src/print.rs", "x1")]).await?;
+            let flagged = store.code_refs_observe(t, repo, &[FileState::present("src/parse.rs", "p2"), FileState::present("src/lex.rs", "l1")], at).await?;
+            let one = flagged.len() == 1 && flagged[0].id == parser && flagged[0].path == "src/parse.rs" && flagged[0].flagged && flagged[0].stale;
+            let since = (stale_of(parser).await?, stale_of(lexer).await?, stale_of(other).await?);
+            // Another tenant and another subject see nothing of it, and change nothing.
+            let elsewhere = store.code_refs_observe("kit-someone-else", repo, &[FileState::present("src/lex.rs", "l9")], at).await?.len()
+                + store.code_refs_observe(t, "repo:kit-other", &[FileState::present("src/lex.rs", "l9")], at).await?.len();
+            let again = store.code_refs_observe(t, repo, &[FileState::present("src/parse.rs", "p3")], at + chrono::Duration::hours(1)).await?;
+            let seen = store.representations(t, parser).await?.1.into_iter().find(|c| c.path == "src/parse.rs");
+            let cleared = store.code_refs_observe(t, repo, &[FileState::present("src/parse.rs", "p1")], at).await?;
+            let fresh = stale_of(parser).await?.is_none() && cleared.len() == 1 && cleared[0].cleared && !cleared[0].stale;
+            // A rename with the same content moves the reference; with other content it is stale
+            // too; a deletion is stale with no hash seen.
+            let moved = store.code_refs_observe(t, repo, &[FileState::renamed("src/lex.rs", "src/scan.rs", "l1"), FileState::deleted("src/print.rs")], at).await?;
+            let paths = |id: Uuid| {
+                let store = &store;
+                async move { Ok::<_, anyhow::Error>(store.representations(t, id).await?.1.into_iter().map(|c| (c.path, c.stale_since.is_some(), c.seen_hash)).collect::<Vec<_>>()) }
+            };
+            let (lexer_refs, other_refs) = (paths(lexer).await?, paths(other).await?);
+            let renamed = lexer_refs == vec![("src/scan.rs".to_string(), false, None)] && stale_of(lexer).await?.is_none() && moved.iter().filter(|c| c.moved_from.as_deref() == Some("src/lex.rs")).count() == 2;
+            let deleted = other_refs == vec![("src/print.rs".to_string(), true, None)] && stale_of(other).await? == Some(at);
+            Ok(unless(
+                one && since == (Some(at), None, None)
+                    && elsewhere == 0
+                    && again.is_empty()
+                    && seen.as_ref().is_some_and(|c| c.stale_since == Some(at) && c.seen_hash.as_deref() == Some("p3"))
+                    && fresh
+                    && renamed
+                    && deleted,
+                || {
+                    format!(
+                        "first observation {flagged:?}; stale since {since:?}; {elsewhere} change(s) for another tenant or subject; seen again {again:?} → {seen:?}; cleared {cleared:?}; after the rename {lexer_refs:?}; after the deletion {other_refs:?}"
+                    )
+                },
+            ))
+        }
+        .await,
+    );
+    r.outcome(
+        "stale_records_are_left_out_of_search",
+        "a record with a stale reference is left out by search and by the exact lookup unless the query asks for stale records, and is still read by id and listed",
+        async {
+            let id = linked("The scheduler wakes sleeping tasks through a timer wheel.", vec![CodeRef::new("src/timer.rs", "t1")]).await?;
+            let ask = |stale: bool| {
+                let e = &e;
+                async move {
+                    let hits = e
+                        .recall(RecallRequest {
+                            subject: Some(repo.into()),
+                            query: "scheduler timer wheel sleeping tasks".into(),
+                            k: Some(10),
+                            analyze: Some(false),
+                            include_stale: stale,
+                            actor: Some("conformance".into()),
+                            ..Default::default()
+                        })
+                        .await?
+                        .hits;
+                    Ok::<bool, anyhow::Error>(hits.iter().any(|h| h.memory.id == id))
+                }
+            };
+            let before = ask(false).await?;
+            store.code_refs_observe(t, repo, &[FileState::present("src/timer.rs", "t2")], at).await?;
+            let (default, with_stale) = (ask(false).await?, ask(true).await?);
+            let by_id = store.get(t, id).await?.is_some_and(|m| m.stale_since == Some(at));
+            let listed = store.list(&ListQuery { tenant: tenant.clone(), subject: Some(repo.into()), limit: 100, ..Default::default() }).await?.iter().any(|m| m.id == id);
+            Ok(unless(before && !default && with_stale && by_id && listed, || {
+                format!("recalled before: {before}; by default when stale: {default}; with include_stale: {with_stale}; read by id with its mark: {by_id}; listed: {listed}")
+            }))
+        }
+        .await,
+    );
+    r.outcome(
+        "code_refs_revalidate_and_travel",
+        "revalidation gives a reference its new hash and clears the mark; references are read by path; staleness marks are exported and imported with their record",
+        async {
+            let id = linked("The router matches paths through a radix tree.", vec![CodeRef::new("src/route.rs", "r1"), CodeRef::new("src/tree.rs", "n1")]).await?;
+            store.code_refs_observe(t, repo, &[FileState::present("src/route.rs", "r2"), FileState::present("src/tree.rs", "n2")], at).await?;
+            let at_path: Vec<(Uuid, CodeRef)> = store.code_refs_at(t, repo, &["src/route.rs".to_string()]).await?;
+            let read = at_path.len() == 1 && at_path[0].0 == id && at_path[0].1.seen_hash.as_deref() == Some("r2") && store.code_refs_at("kit-someone-else", repo, &["src/route.rs".to_string()]).await?.is_empty();
+            // Exported with its marks, and imported with them under a new id.
+            let line = store.export_records(t, Some(repo), None, 1000).await?.into_iter().find(|l| l.id == id);
+            let exported = line.as_ref().is_some_and(|l| l.code_refs.len() == 2 && l.code_refs.iter().all(|c| c.stale_since == Some(at) && c.seen_hash.is_some()));
+            let mut copy = line.ok_or_else(|| anyhow::anyhow!("the record was not exported"))?;
+            copy.id = Uuid::now_v7();
+            copy.content = "The router matches paths through a radix tree (imported copy).".into();
+            copy.content_hash = memhouse_core::engine::content_hash(&copy.content);
+            store.import_records(&[ImportRow { record: copy.clone(), embedding: None, alt: None }]).await?;
+            let imported = store.get(t, copy.id).await?.is_some_and(|m| m.stale_since == Some(at)) && store.representations(t, copy.id).await?.1 == copy.code_refs;
+            // One reference by a given hash: the record stays stale for the other. Then the rest
+            // by the hash last seen.
+            let part = store.code_refs_revalidate(t, id, Some(&[CodeRef::new("src/route.rs", "r9")])).await?.unwrap_or_default();
+            let still = stale_of(id).await?.is_some();
+            let all = store.code_refs_revalidate(t, id, None).await?.unwrap_or_default();
+            let done = stale_of(id).await?.is_none();
+            let hashes = |refs: &[CodeRef]| refs.iter().map(|c| (c.path.clone(), c.blob_hash.clone(), c.stale_since.is_some())).collect::<Vec<_>>();
+            let expected_part = vec![("src/route.rs".to_string(), "r9".to_string(), false), ("src/tree.rs".to_string(), "n1".to_string(), true)];
+            let expected_all = vec![("src/route.rs".to_string(), "r9".to_string(), false), ("src/tree.rs".to_string(), "n2".to_string(), false)];
+            let unknown = store.code_refs_revalidate(t, Uuid::now_v7(), None).await?.is_none() && store.code_refs_revalidate("kit-someone-else", id, None).await?.is_none();
+            let foreign = store.code_refs_revalidate(t, id, Some(&[CodeRef::new("src/absent.rs", "x")])).await.is_err();
+            Ok(unless(read && exported && imported && hashes(&part) == expected_part && still && hashes(&all) == expected_all && done && unknown && foreign, || {
+                format!(
+                    "read by path: {read}; exported with marks: {exported}; imported with marks: {imported}; after one reference {:?} (still stale: {still}); after the rest {:?} (fresh: {done}); unknown record answered none: {unknown}; a path that is no reference refused: {foreign}",
+                    hashes(&part),
+                    hashes(&all)
+                )
+            }))
+        }
+        .await,
+    );
     // Leave the store as it was found, apart from its audit log.
     let _ = e.forget_by(ForgetRequest { tenant: Some(tenant.clone()), all: true, confirm: Some(tenant.clone()), actor: Some("conformance".into()), ..Default::default() }).await;
     r

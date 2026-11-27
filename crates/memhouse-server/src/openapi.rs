@@ -10,7 +10,7 @@ use schemars::{JsonSchema, SchemaGenerator};
 use serde_json::{json, Map, Value};
 
 /// The API version, separate from the crate version. Minor and patch releases only add.
-pub const API_VERSION: &str = "1.8.0";
+pub const API_VERSION: &str = "1.9.0";
 
 /// Routes kept from before v1, with the route that replaces each. They answer as before and add
 /// `Deprecation`, `Sunset` and `Link` headers; they are removed no earlier than [`SUNSET`].
@@ -131,6 +131,12 @@ fn ops(g: &mut SchemaGenerator) -> Vec<Op> {
     let token_res = s(g.subschema_for::<memhouse_core::identity::TokenResponse>());
     let whoami = s(g.subschema_for::<WhoAmI>());
     let promote_req = s(g.subschema_for::<PromoteRequest>());
+    let touched_req = s(g.subschema_for::<FileTouchedRequest>());
+    let touched_res = s(g.subschema_for::<FileTouchedResult>());
+    let changed_req = s(g.subschema_for::<FilesChangedRequest>());
+    let changed_res = s(g.subschema_for::<FilesChangedResult>());
+    let revalidate_req = s(g.subschema_for::<RevalidateRequest>());
+    let revalidate_res = s(g.subschema_for::<RevalidateResult>());
     let preferences = s(g.subschema_for::<Vec<EffectivePreference>>());
     let grant = s(g.subschema_for::<Grant>());
     let grant_list = s(g.subschema_for::<Vec<Grant>>());
@@ -305,6 +311,51 @@ fn ops(g: &mut SchemaGenerator) -> Vec<Op> {
             params: vec![],
             idempotent: true,
             errors: &[400, 401, 404, 409, 500, 503],
+            open: false,
+        },
+        Op {
+            method: "post",
+            path: "/v1/code/touched",
+            id: "fileTouched",
+            summary: "Memories linked to files an agent opened or edited",
+            description: "File-touched recall (TPL-05), what a coding harness's hook calls. Each file comes with its current content hash (the git blob hash by convention). First the staleness of the memories linked to the files is updated (TPL-04): a reference whose stored hash differs becomes stale, one whose file has its stored content again stops being stale, a rename moves it. Then every linked memory the caller may recall is returned, under the same access decision as `recall`: `memories` (not stale) and `needs_revalidation` (stale: left out of default recall until revalidated, revised or forgotten). With `query`, procedures that match the task are added in `related`. Needs `memory:read`; the staleness is recorded only for a caller that also has `memory:write` (for others the comparison is made for the answer alone). Changes are audited as `memory.stale`, `memory.fresh` and `memory.code_moved`.",
+            tag: "memory",
+            stability: Stable,
+            body: Some(touched_req),
+            ok: touched_res,
+            params: vec![],
+            idempotent: false,
+            errors: &[400, 401, 403, 500, 503],
+            open: false,
+        },
+        Op {
+            method: "post",
+            path: "/v1/code/changed",
+            id: "filesChanged",
+            summary: "Report files that changed, were deleted or renamed",
+            description: "Marks staleness in batch (TPL-04), what a post-commit hook calls: for files the agent never opened too. A changed file carries its new content hash, a deleted one `deleted`, a renamed one `renamed_from` and its hash. A memory with a stale reference is left out of default recall until it is revalidated, revised or forgotten. The answer lists the changes to memories the caller may recall. Needs `memory:write`. Audited as `memory.stale`, `memory.fresh` and `memory.code_moved`.",
+            tag: "memory",
+            stability: Stable,
+            body: Some(changed_req),
+            ok: changed_res,
+            params: vec![],
+            idempotent: false,
+            errors: &[400, 401, 403, 500, 503],
+            open: false,
+        },
+        Op {
+            method: "post",
+            path: "/v1/code/revalidate",
+            id: "revalidate",
+            summary: "Confirm that a stale memory still holds",
+            description: "Revalidation (TPL-04): the memory's code references take the files' current hashes and are no longer stale, so the memory returns to default recall. With `code_refs`, those references take the given hashes; without, every stale reference takes the hash its file was last seen with (a reference to a deleted file has none: revise or forget the memory, or give `code_refs`). Needs `memory:write` and sight of the memory. Audited as `memory.revalidate`.",
+            tag: "memory",
+            stability: Stable,
+            body: Some(revalidate_req),
+            ok: revalidate_res,
+            params: vec![],
+            idempotent: false,
+            errors: &[400, 401, 403, 404, 409, 500, 503],
             open: false,
         },
         Op {

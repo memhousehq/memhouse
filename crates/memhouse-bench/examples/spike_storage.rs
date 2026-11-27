@@ -365,6 +365,7 @@ async fn main() -> anyhow::Result<()> {
             include_candidates: false,
             shared_agents: vec![],
             with_vectors: false,
+            include_stale: false,
         };
         let pgk = store.search(&sq).await?;
         let session_of: HashMap<&str, &str> = rounds.iter().map(|r| (r.id.as_str(), r.session.as_str())).collect();

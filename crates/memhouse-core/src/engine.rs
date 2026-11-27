@@ -498,6 +498,9 @@ impl Engine {
             Some(m) => self.redact_attrs(policy, m, &mut redactions).await?,
             None => serde_json::json!({}),
         };
+        // Code references as a writer may state them (TPL-04): repository paths in one form,
+        // each once; the staleness marks are the server's.
+        let code_refs = crate::staleness::written_refs(&req.code_refs)?;
         // Provenance of a promotion is written by `promote` only, never taken from a caller.
         if op != Op::Promote {
             if let Some(o) = metadata.as_object_mut() {
@@ -512,11 +515,19 @@ impl Engine {
             Some(st) => write_hash(format!("{}\u{1f}{}\u{1f}{}\u{1f}{}", kind.as_str(), content, st.record_type, st.attrs), &scope),
         };
         // A signal must reach the gate every time it is seen: the repeat is what commits it.
-        let signal = type_policy.gate.holds_signals() && metadata.get("signal").and_then(|v| v.as_bool()) == Some(true);
+        // So must a correction (MEM-02), which is promoted by being given again.
+        let flag = |k: &str| metadata.get(k).and_then(|v| v.as_bool()) == Some(true);
+        let signal = type_policy.gate.holds_signals() && (flag("signal") || flag("correction"));
 
         if req.supersedes.is_none() && !signal {
-            if let Some(existing) = self.store.find_by_hash(&tenant, &subject, &hash).await? {
-                let stored = self.store.get(&tenant, existing).await?;
+            let existing = self.store.find_by_hash(&tenant, &subject, &hash).await?;
+            let stored = match existing {
+                Some(id) => self.store.get(&tenant, id).await?,
+                None => None,
+            };
+            // A held correction the gate recognised by its wording counts its repeats too.
+            let counted = stored.as_ref().is_some_and(|m| m.status == MemoryStatus::Candidate && m.metadata.get("counted").is_some());
+            if let Some(existing) = existing.filter(|_| !counted) {
                 let status = stored.as_ref().map(|m| m.status).unwrap_or(MemoryStatus::Committed);
                 metrics::inc("memhouse_writes_total", &[("status", "deduplicated")], 1.0);
                 // A promotion that lands on an identical record still happened (MEM-05): its
@@ -580,6 +591,7 @@ impl Engine {
             scope,
             provenance: Self::provenance(policy, &actor, &req.user, &req.request_key),
             language: None,
+            stale_since: None,
         };
         let proposal = Proposal {
             id,
@@ -590,7 +602,7 @@ impl Engine {
             source,
             op,
             entry,
-            records: vec![PendingRecord { memory: mem, content_hash: hash, redactions: redactions.clone(), focus: None, structured, code_refs: req.code_refs.clone() }],
+            records: vec![PendingRecord { memory: mem, content_hash: hash, redactions: redactions.clone(), focus: None, structured, code_refs }],
             session_id: None,
             enqueued_at: now,
         };
@@ -729,6 +741,7 @@ impl Engine {
                     scope: req.scope.clone().unwrap_or_default(),
                     provenance: Self::provenance(policy, &actor, &req.user, &req.request_key),
                     language: None,
+                    stale_since: None,
                 },
                 content_hash: hash,
                 redactions,
@@ -920,6 +933,9 @@ impl Engine {
         let (mut embeddings, working) = (embeddings?, working?);
         let embed_ms = start.elapsed().as_secs_f64() * 1000.0;
         let now_valid = req.as_of.unwrap_or_else(Utc::now);
+        // TPL-04: a memory about a file that changed since is left out until it is revalidated.
+        // A recall of the past (`as_of`) asks what was known then, so it is not filtered.
+        let include_stale = req.include_stale || req.as_of.is_some();
         // The cache is per session, not per reader: every access rule is applied here.
         let (mut session_hits, session_statements) = match working {
             Some((items, loaded, full)) => {
@@ -930,6 +946,7 @@ impl Engine {
                         && m.valid_from <= now_valid
                         && m.valid_to.is_none_or(|t| t > now_valid)
                         && req.tags.as_ref().is_none_or(|t| t.iter().any(|x| m.tags.contains(x)))
+                        && (include_stale || m.stale_since.is_none())
                 };
                 let mut mine: Vec<Memory> = items.into_iter().filter(visible).collect();
                 let mut statements = usize::from(loaded);
@@ -991,6 +1008,7 @@ impl Engine {
             include_candidates: req.include_candidates,
             shared_agents: ctx.shared_agents.clone(),
             with_vectors: rank.dedup,
+            include_stale,
         };
         // Extra probes: the same query inside the time windows it mentions, and one per sub-query.
         let mut probes: Vec<(SearchQuery, f32)> = vec![];
@@ -1095,6 +1113,38 @@ impl Engine {
         let present = Utc::now();
         crate::pack::score(&mut hits, rank, req.as_of.unwrap_or(present), present);
 
+        // MEM-02, task-matched retrieval: a procedure is returned only for a task it matches
+        // (`task_matches`). Similarity alone never brings one in: the vector retriever always
+        // has a nearest record, however unrelated.
+        let mut off_task: Vec<ExcludedRecord> = vec![];
+        let procedure = |h: &Hit| h.memory.kind == MemoryKind::Procedural && h.memory.status == MemoryStatus::Committed;
+        if policy.of(MemoryKind::Procedural).retrieval == crate::policy::Retrieval::TaskMatched && req.as_of.is_none() && hits.iter().chain(&reserve).any(procedure) {
+            let linked: std::collections::HashSet<Uuid> = if req.paths.is_empty() {
+                Default::default()
+            } else {
+                statements += 1;
+                within(deadline, self.store.code_refs_at(&tenant, &subject, &req.paths).instrument(tracing::info_span!("recall.task")))
+                    .await?
+                    .into_iter()
+                    .map(|(id, _)| id)
+                    .collect()
+            };
+            let values = self.languages.values();
+            let on_task = |m: &Memory| linked.contains(&m.id) || req.tags.is_some() || values.matches_task(&req.query, &format!("{} {}", m.content, m.tags.join(" ")));
+            hits.retain(|h| {
+                let keep = !procedure(h) || on_task(&h.memory);
+                if !keep {
+                    off_task.push(ExcludedRecord {
+                        id: h.memory.id,
+                        reason: ExclusionReason::Task,
+                        detail: "a procedure is returned for a task it matches: a file of the task, a requested tag, or two words in common with the query".into(),
+                    });
+                }
+                keep
+            });
+            reserve.retain(|h| !procedure(h) || on_task(&h.memory));
+        }
+
         if !exact_hits.is_empty() {
             let top = hits.first().map(|h| h.score).unwrap_or(0.0);
             let ids: std::collections::HashSet<Uuid> = exact_hits.iter().map(|h| h.memory.id).collect();
@@ -1165,6 +1215,7 @@ impl Engine {
             }));
         }
         cut.extend(overridden);
+        cut.extend(off_task);
         // PERF-06: the token budget is a hard cap on the returned memories and on the block.
         let format = req.render_format.or(req.render.then_some(RenderFormat::Plain));
         let rendered = crate::pack::pack(&mut hits, req.token_budget, format, &subject, &mut cut);
@@ -1215,6 +1266,7 @@ impl Engine {
                 denied_labels: ctx.denied_labels,
                 as_of: req.as_of,
                 valid_at: req.as_of.unwrap_or(now_valid),
+                include_stale,
                 mode,
                 token_budget: req.token_budget,
                 reranked: use_rerank,
@@ -1297,7 +1349,19 @@ impl Engine {
             (req.structured.clone(), req.code_refs.clone().unwrap_or_default())
         } else {
             let (s, c) = self.store.representations(&tenant, req.id).await?;
-            (req.structured.clone().or(s), req.code_refs.clone().unwrap_or(c))
+            // A revision ends the staleness of the version it replaces (TPL-04). References it
+            // inherits take the content their file was last seen with, which is what the
+            // reviser had before them; one to a file that was deleted is not carried over.
+            let inherited = || {
+                c.iter()
+                    .filter_map(|r| match (&r.stale_since, &r.seen_hash) {
+                        (None, _) => Some(r.as_written()),
+                        (Some(_), Some(h)) => Some(CodeRef::new(r.path.clone(), h.clone())),
+                        (Some(_), None) => None,
+                    })
+                    .collect()
+            };
+            (req.structured.clone().or(s), req.code_refs.clone().unwrap_or_else(inherited))
         };
         // New content that is itself a structured record replaces the old structured form.
         let structured = if req.structured.is_none() && crate::classify::structured_from_content(&req.content).is_some() { None } else { structured };

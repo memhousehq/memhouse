@@ -73,6 +73,8 @@ flowchart LR
 | Baseline floor (`secret` redaction, injection screen) | can't be turned off | — | start-up refuses a weaker config |
 | Behaviour policy that can only tighten governance; approved, versioned, rolled back | the configuration (no spec) | `memhouse policy`, `/v1/policies` | `policy_precedence`, `policy_approval`, `policy_rollback` checks; `policy.*` events |
 | Content size limit | 20,000 chars | `max_content_chars` | 400 response |
+| Git-aware staleness: a memory about a file that changed is left out of recall until revalidated or revised ([coding.md](coding.md)) | always on, for memories with `code_refs` | — | `code_staleness`, `stale_until_revalidated`, `file_touched_access` checks; `memory.stale` / `memory.fresh` / `memory.revalidate` events |
+| Procedural memory promoted only by a reviewer or by a repeated correction | on (3 repeats) | `[intake] procedural_corrections` (0: reviewer only) | `procedural_promotion` check; `memory.signal` / `memory.admit` events |
 
 ## Redaction
 
@@ -312,6 +314,12 @@ appended to `mh_audit`. Recalls are added when `audit_reads = true`.
 | `memory.import` | import | added, skipped, file |
 | `retention.purge` | retention | records, days |
 | `migration.complete` | `memhouse migrate`, on the target | source and target without credentials, embedder, rows per table, verification result, timings |
+| `memory.stale` | file-touched recall, files changed (a file was seen with other content, or deleted) | `files` (path, `moved_from`), `stale`, `why` (the event: `file.opened`, `file.edited`, `files.changed`, and the caller's `reason`) |
+| `memory.fresh` | the same routes (a file was seen with its stored content again) | as above; `stale` says whether another reference of the memory is still stale |
+| `memory.code_moved` | the same routes (a file was renamed, content unchanged) | `files` (new path, `moved_from`) |
+| `memory.revalidate` | revalidate | per reference: `path`, `from` and `to` hash, `was_stale`; `stale` after it |
+| `memory.signal` | the write gate (actor `engine`): an inferred preference or a correction was seen again | `signals`, `seen_in`, `reason`; for a correction also `corrections` and `threshold` |
+| `memory.admit` | the write gate or a reviewer: a candidate was committed | who and why; for a procedure promoted by repeated correction: `reason` (`repeated_correction: …`), `corrections`, `threshold` |
 
 `actor` is the `x-memhouse-actor` header for REST, `--actor` for `memhouse mcp`, `cli` for the
 CLI, `enrich` for enrichment workers and `system` for scheduled jobs. Use one actor name per integration so the log shows which
@@ -489,7 +497,7 @@ memhouse bench run --suite governance
 ```
 
 It runs against an isolated benchmark database and writes a report under `bench-results/`. All
-73 checks pass on the current release on Postgres; on the Lite profile 70 apply and pass, and 3
+79 checks pass on the current release on Postgres; on the Lite profile 76 apply and pass, and 3
 are reported as not applicable ([conformance.md](conformance.md#where-they-run)). The core ones:
 
 | Check | What it proves |
@@ -547,6 +555,12 @@ are reported as not applicable ([conformance.md](conformance.md#where-they-run))
 | `migrate_no_credentials` | no password of either database URL appears in the plan, the report, an error, the log or the audit event |
 | `migrate_failed_verification` | when a record differs on the target the command names it and fails, and the configuration and the source are unchanged; a verified run switches the configuration |
 | `embedded_same_controls` | MemHouse embedded in a process ([sdk.md](sdk.md)) runs the server's controls: with no configured key nothing authenticates, a wrong credential is refused with 401 and audited as `auth.failed` (every refused request has its own event), an injection attempt is quarantined and never recalled, and the committed write is audited (`memory.write` for its record) (G18) |
+| `code_staleness` | 200 scripted cases (a file opened with other content, changed, deleted, renamed with and without a change of content): every memory linked to an affected file is flagged and left out of the next recall, and no other memory is flagged; a rename moves the reference (TPL-04, [coding.md](coding.md)) |
+| `file_touched_recall` | 100 file-touched cases, half on open and half on edit, some with more linked memories than a recall's `k`: every linked memory that is not stale is returned, the one written about the earlier content is listed for revalidation, and nothing else is returned (TPL-05) |
+| `stale_until_revalidated` | a stale memory is left out of hybrid recall, the exact probe and the session cache; `include_stale` returns it marked and `as_of` is not filtered; the explanation names `stale`; the stored content seen again clears it; revalidation and revision bring it back; a writer can't set or clear the marks; the marks are exported; all audited |
+| `file_touched_access` | file-touched recall tells a caller of no memory it could not recall (a denied label, another agent's scope, a candidate, a quarantined record, another tenant); a read-only caller records nothing; marking staleness and revalidating need `memory:write`; a memory the caller can't see is not revalidated nor confirmed to exist |
+| `procedural_promotion` | one correction is held, the configured number of the same correction promotes it, audited with reason, count and threshold; another correction or a plain proposal is not counted; a reviewer still confirms; a threshold of 1 needs a repeat and 0 leaves it to the reviewer; under an `approval` gate repeats never commit; a procedure is recalled only for a matching task, by words or by a file of the task (MEM-02) |
+| `hooks_only_call_api` | the harness hook adapters print exactly what the API answers their credential (a label the credential is denied is kept out by the server), record nothing a read-only credential may not write, and add nothing when the server refuses them or can't be reached (TR-TPL-03) |
 
 Run it in CI and keep the reports: they are audit evidence for every release.
 
@@ -578,9 +592,15 @@ reviewers don't have to find them:
   in G29.
 - **Expired working memory is kept as `expired`** (never recalled, readable by id) until the
   deletion workflow of G22 purges it.
-- **Procedural and taxonomic memory are stored and gated, not yet used specially**: promotion of a
-  procedure after repeated confirmation, task-matched retrieval and term matching arrive in G19
-  and G25.
+- **Taxonomic memory is stored and gated, not yet used specially**: term matching arrives in
+  G25. (Procedural memory is promoted on repeated correction and retrieved by task since G19:
+  [memory-types.md](memory-types.md#procedural-memory).)
+- **Staleness is as good as the hashes it is told.** A memory goes stale when a hook or a
+  client reports its file with another hash; a file changed where no hook runs (another
+  machine, a branch the agent never visits) is noticed when the file is next opened there or
+  its commit is reported. A caller with `memory:write` in the subject can report any hash, and
+  so hold a memory back or (by reporting the stored hash) bring it back; every such change is
+  audited with its actor ([coding.md](coding.md#limits)).
 - **Retention is by write time** (`created_at`), not event time. An imported or backfilled
   conversation is kept for the full period from when it was imported.
 - **Ledger re-application after a restore is a manual SQL procedure on Postgres.** On the Lite

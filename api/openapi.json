@@ -121,10 +121,27 @@
         "description": "A file a memory is about (TR-TPL-02): stale when the file's content hash changes.",
         "properties": {
           "blob_hash": {
+            "description": "The content hash of the file when the memory was written or last revalidated: the git\nblob hash by convention (`git hash-object`).",
             "type": "string"
           },
           "path": {
+            "description": "The file's path in the repository, with `/` separators, relative to its root.",
             "type": "string"
+          },
+          "seen_hash": {
+            "description": "The content hash the file was last seen with while stale; absent when it was deleted.\nSet by the server, ignored on a write.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "stale_since": {
+            "description": "Set by the server when the file was seen with other content, or deleted (TPL-04): the\nmemory is then left out of default recall until it is revalidated or revised. Ignored\non a write.",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -405,8 +422,18 @@
             "type": "string"
           },
           {
+            "const": "stale",
+            "description": "A file the memory is about changed since it was written or last revalidated (TPL-04).",
+            "type": "string"
+          },
+          {
             "const": "filter",
             "description": "Outside the request's own filters: kinds, tags or time window.",
+            "type": "string"
+          },
+          {
+            "const": "task",
+            "description": "A procedure that does not match the task the recall is for (MEM-02).",
             "type": "string"
           },
           {
@@ -430,6 +457,234 @@
             "type": "string"
           }
         ]
+      },
+      "FileEvent": {
+        "description": "Which hook reported a file (TPL-05).",
+        "enum": [
+          "opened",
+          "edited"
+        ],
+        "type": "string"
+      },
+      "FileState": {
+        "additionalProperties": false,
+        "description": "What a file of a repository was seen as (TPL-04): its current content hash, or deleted, or\nrenamed from another path.",
+        "properties": {
+          "blob_hash": {
+            "description": "The file's current content hash (the git blob hash by convention). A file named\nwithout one, and not `deleted`, is only looked up: nothing is recorded about it.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "deleted": {
+            "description": "The file no longer exists.",
+            "type": "boolean"
+          },
+          "path": {
+            "description": "The file's path in the repository, with `/` separators, relative to its root.",
+            "type": "string"
+          },
+          "renamed_from": {
+            "description": "The path the file had before it was renamed to `path`: references to the old path move\nto the new one, and are stale only if the content changed too.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "FileTouchedRequest": {
+        "description": "An agent opened or edited files of a repository (`POST /v1/code/touched`, TPL-05): the\nstaleness of the memories linked to them is updated from the hashes, and the linked\nmemories are returned.",
+        "properties": {
+          "actor": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "event": {
+            "$ref": "#/components/schemas/FileEvent",
+            "default": "opened",
+            "description": "`opened` (the default) or `edited`."
+          },
+          "files": {
+            "description": "The files, each with its current content hash. A file given as `deleted` or with\n`renamed_from` is handled as in `POST /v1/code/changed`; one given by its path alone\nis looked up without recording anything about it.",
+            "items": {
+              "$ref": "#/components/schemas/FileState"
+            },
+            "type": "array"
+          },
+          "query": {
+            "default": null,
+            "description": "What the agent is doing, in natural language. With it, procedures that match the task\nand are not linked to the files are returned too (`related`, task-matched retrieval).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "render": {
+            "description": "Also return the memories as a text block ready for a prompt.",
+            "type": "boolean"
+          },
+          "scope": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Scope"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Narrower visibility, as for `recall`."
+          },
+          "subject": {
+            "default": null,
+            "description": "The repository (`repo:<name>` in the coding template).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tenant": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "files"
+        ],
+        "type": "object"
+      },
+      "FileTouchedResult": {
+        "description": "The memories linked to the touched files.",
+        "properties": {
+          "changes": {
+            "description": "What this request changed: references flagged stale, cleared or moved by a rename, of\nmemories the caller may recall.",
+            "items": {
+              "$ref": "#/components/schemas/RefChange"
+            },
+            "type": "array"
+          },
+          "memories": {
+            "description": "Linked memories whose files have the content they were written about: every one the\ncaller may recall, however many there are.",
+            "items": {
+              "$ref": "#/components/schemas/LinkedMemory"
+            },
+            "type": "array"
+          },
+          "needs_revalidation": {
+            "description": "Linked memories whose file changed since: left out of default recall until each is\nrevalidated (`POST /v1/code/revalidate`), revised or forgotten.",
+            "items": {
+              "$ref": "#/components/schemas/LinkedMemory"
+            },
+            "type": "array"
+          },
+          "related": {
+            "description": "Procedures that match `query` and are not linked to the files (only with `query`).",
+            "items": {
+              "$ref": "#/components/schemas/Memory"
+            },
+            "type": "array"
+          },
+          "rendered": {
+            "description": "`memories` and `related` as one text block, with `render`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "memories",
+          "needs_revalidation"
+        ],
+        "type": "object"
+      },
+      "FilesChangedRequest": {
+        "description": "Files changed outside the agent's view (`POST /v1/code/changed`, TPL-04): a commit, a\ncheckout, a merge. Staleness is marked for every file named, opened or not.",
+        "properties": {
+          "actor": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "files": {
+            "description": "Changed files with their new content hash, deleted files, renamed files.",
+            "items": {
+              "$ref": "#/components/schemas/FileState"
+            },
+            "type": "array"
+          },
+          "reason": {
+            "default": null,
+            "description": "What produced the change, for the audit log: a commit id, `checkout`, ...",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "subject": {
+            "default": null,
+            "description": "The repository (`repo:<name>` in the coding template).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tenant": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "files"
+        ],
+        "type": "object"
+      },
+      "FilesChangedResult": {
+        "description": "What a batch of file changes did.",
+        "properties": {
+          "changes": {
+            "description": "References flagged stale, cleared or moved, of memories the caller may recall.",
+            "items": {
+              "$ref": "#/components/schemas/RefChange"
+            },
+            "type": "array"
+          },
+          "cleared": {
+            "description": "Memories that are no longer stale (every file they are about was seen with its stored\ncontent again), among those the caller may recall.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "flagged": {
+            "description": "Memories that became stale with this request, among those the caller may recall.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "changes",
+          "flagged",
+          "cleared"
+        ],
+        "type": "object"
       },
       "ForgetRequest": {
         "description": "Delete memories (`forget`, CORE-05). Name exactly one of `id`, `subject`, `user`, `agent`,\n`source` or `all`. Deletion is permanent and includes every derived representation.",
@@ -909,6 +1164,26 @@
         ],
         "type": "object"
       },
+      "LinkedMemory": {
+        "description": "A memory linked to a file, with the state of that link (TPL-05).",
+        "properties": {
+          "code_refs": {
+            "description": "The memory's references to the paths the request named.",
+            "items": {
+              "$ref": "#/components/schemas/CodeRef"
+            },
+            "type": "array"
+          },
+          "memory": {
+            "$ref": "#/components/schemas/Memory"
+          }
+        },
+        "required": [
+          "memory",
+          "code_refs"
+        ],
+        "type": "object"
+      },
       "Memory": {
         "description": "A stored memory record.",
         "properties": {
@@ -983,6 +1258,14 @@
           "source": {
             "description": "Source label: the writer by default, `enrich:<model>` for extracted facts.",
             "type": "string"
+          },
+          "stale_since": {
+            "description": "Set while a file the memory is about has other content than when the memory was written\nor last revalidated (TPL-04): the memory is left out of default recall.",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "status": {
             "$ref": "#/components/schemas/MemoryStatus",
@@ -2680,6 +2963,10 @@
             },
             "type": "array"
           },
+          "include_stale": {
+            "description": "The recall also returned memories whose file had changed (`include_stale`, or `as_of`).",
+            "type": "boolean"
+          },
           "k": {
             "format": "uint",
             "minimum": 0,
@@ -2836,6 +3123,10 @@
             "description": "Also return candidates (plans and speculation the gate holds, proposals waiting for\nreview), each labelled by its `status` (PR-7). Default recall never returns them.",
             "type": "boolean"
           },
+          "include_stale": {
+            "description": "Also return memories whose file changed since they were written (TPL-04), each marked\nby its `stale_since`. Default recall leaves them out until they are revalidated.",
+            "type": "boolean"
+          },
           "k": {
             "default": null,
             "description": "Number of memories to return (default `memory.default_k`, at most 200).",
@@ -2867,6 +3158,13 @@
               }
             ],
             "default": null
+          },
+          "paths": {
+            "description": "Files the task at hand touches (repository paths). A procedure linked to one of them\nmatches the task whatever the query says (task-matched retrieval, MEM-02).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "query": {
             "description": "What you need to know, in natural language.",
@@ -3083,6 +3381,45 @@
           "statements",
           "probes",
           "instrument_ms"
+        ],
+        "type": "object"
+      },
+      "RefChange": {
+        "description": "What an observation did to one code reference (see `Store::code_refs_observe`).",
+        "properties": {
+          "cleared": {
+            "description": "The reference was stale and the file was seen again with the stored content.",
+            "type": "boolean"
+          },
+          "flagged": {
+            "description": "The reference became stale with this observation.",
+            "type": "boolean"
+          },
+          "id": {
+            "description": "The memory the reference belongs to.",
+            "format": "uuid",
+            "type": "string"
+          },
+          "moved_from": {
+            "description": "The path it had before a rename moved it.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "path": {
+            "description": "The reference's path, after a rename.",
+            "type": "string"
+          },
+          "stale": {
+            "description": "Whether the memory has any stale reference after the observation.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "path",
+          "stale"
         ],
         "type": "object"
       },
@@ -3477,6 +3814,71 @@
           "rank",
           "score",
           "tokens"
+        ],
+        "type": "object"
+      },
+      "RevalidateRequest": {
+        "description": "Confirm that a memory still holds for the files as they are now (`POST /v1/code/revalidate`,\nTPL-04): its references take the new hashes and it returns to default recall.",
+        "properties": {
+          "actor": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "code_refs": {
+            "default": null,
+            "description": "The references to revalidate, each with the file's current content hash. Without it,\nevery stale reference takes the hash its file was last seen with; a reference to a\ndeleted file has none, so the memory must be revised (or forgotten) instead.",
+            "items": {
+              "$ref": "#/components/schemas/CodeRef"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "id": {
+            "description": "The memory.",
+            "format": "uuid",
+            "type": "string"
+          },
+          "tenant": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "RevalidateResult": {
+        "description": "A revalidated memory.",
+        "properties": {
+          "code_refs": {
+            "description": "The memory's code references after the revalidation.",
+            "items": {
+              "$ref": "#/components/schemas/CodeRef"
+            },
+            "type": "array"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "stale": {
+            "description": "Whether any reference is still stale (only some were revalidated).",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "code_refs",
+          "stale"
         ],
         "type": "object"
       },
@@ -4141,7 +4543,7 @@
     },
     "summary": "Governed long-term memory for AI agents.",
     "title": "MemHouse API",
-    "version": "1.8.0"
+    "version": "1.9.0"
   },
   "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
   "openapi": "3.1.0",
@@ -4298,6 +4700,326 @@
           "operations"
         ],
         "x-stability": "preview"
+      }
+    },
+    "/v1/code/changed": {
+      "post": {
+        "description": "Marks staleness in batch (TPL-04), what a post-commit hook calls: for files the agent never opened too. A changed file carries its new content hash, a deleted one `deleted`, a renamed one `renamed_from` and its hash. A memory with a stale reference is left out of default recall until it is revalidated, revised or forgotten. The answer lists the changes to memories the caller may recall. Needs `memory:write`. Audited as `memory.stale`, `memory.fresh` and `memory.code_moved`.",
+        "operationId": "filesChanged",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/User"
+          },
+          {
+            "$ref": "#/components/parameters/Actor"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FilesChangedRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FilesChangedResult"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Invalid request (`invalid_request`)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Missing, wrong, expired or revoked key or token (`unauthorized`)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The caller may not do this (`forbidden`): a missing permission, another tenant, subject, label, user or scope."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was written: a dependency (the intake queue, the database) is down for now (`unavailable`). Retry after `Retry-After` seconds with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Report files that changed, were deleted or renamed",
+        "tags": [
+          "memory"
+        ],
+        "x-stability": "stable"
+      }
+    },
+    "/v1/code/revalidate": {
+      "post": {
+        "description": "Revalidation (TPL-04): the memory's code references take the files' current hashes and are no longer stale, so the memory returns to default recall. With `code_refs`, those references take the given hashes; without, every stale reference takes the hash its file was last seen with (a reference to a deleted file has none: revise or forget the memory, or give `code_refs`). Needs `memory:write` and sight of the memory. Audited as `memory.revalidate`.",
+        "operationId": "revalidate",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/User"
+          },
+          {
+            "$ref": "#/components/parameters/Actor"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RevalidateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RevalidateResult"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Invalid request (`invalid_request`)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Missing, wrong, expired or revoked key or token (`unauthorized`)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The caller may not do this (`forbidden`): a missing permission, another tenant, subject, label, user or scope."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Not found (`not_found`)."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Conflict with the stored state (`conflict`)."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was written: a dependency (the intake queue, the database) is down for now (`unavailable`). Retry after `Retry-After` seconds with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Confirm that a stale memory still holds",
+        "tags": [
+          "memory"
+        ],
+        "x-stability": "stable"
+      }
+    },
+    "/v1/code/touched": {
+      "post": {
+        "description": "File-touched recall (TPL-05), what a coding harness's hook calls. Each file comes with its current content hash (the git blob hash by convention). First the staleness of the memories linked to the files is updated (TPL-04): a reference whose stored hash differs becomes stale, one whose file has its stored content again stops being stale, a rename moves it. Then every linked memory the caller may recall is returned, under the same access decision as `recall`: `memories` (not stale) and `needs_revalidation` (stale: left out of default recall until revalidated, revised or forgotten). With `query`, procedures that match the task are added in `related`. Needs `memory:read`; the staleness is recorded only for a caller that also has `memory:write` (for others the comparison is made for the answer alone). Changes are audited as `memory.stale`, `memory.fresh` and `memory.code_moved`.",
+        "operationId": "fileTouched",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/User"
+          },
+          {
+            "$ref": "#/components/parameters/Actor"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FileTouchedRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FileTouchedResult"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Invalid request (`invalid_request`)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Missing, wrong, expired or revoked key or token (`unauthorized`)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The caller may not do this (`forbidden`): a missing permission, another tenant, subject, label, user or scope."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was written: a dependency (the intake queue, the database) is down for now (`unavailable`). Retry after `Retry-After` seconds with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Memories linked to files an agent opened or edited",
+        "tags": [
+          "memory"
+        ],
+        "x-stability": "stable"
       }
     },
     "/v1/enrich/status": {

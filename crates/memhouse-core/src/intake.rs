@@ -366,6 +366,12 @@ pub(crate) fn promoted_from_in(metadata: &serde_json::Value) -> Vec<Uuid> {
     metadata.get("promoted_from").and_then(|f| f.as_array()).map(|a| a.iter().filter_map(|v| v.as_str().and_then(|s| Uuid::parse_str(s).ok())).collect()).unwrap_or_default()
 }
 
+/// Times a correction must be given before it becomes a procedure (MEM-02): the configured
+/// number, and never fewer than two, so one occurrence never promotes.
+pub(crate) fn correction_threshold(cfg: &crate::config::IntakeConfig) -> u32 {
+    cfg.procedural_corrections.max(2)
+}
+
 /// The held signals a batch of records repeats (see [`IntakeWrite::signals`]).
 pub(crate) fn signals_of(items: &[Item]) -> Vec<(Uuid, Uuid, bool)> {
     items.iter().filter_map(|i| i.signal.map(|(held, _, commit)| (held, i.rec.memory.id, commit))).collect()
@@ -783,6 +789,7 @@ impl Engine {
                 o.remove("held");
                 o.remove("signals");
                 o.remove("review");
+                o.remove("counted");
                 o.remove("pref_key");
             }
             if m.kind == MemoryKind::Preference {
@@ -817,6 +824,15 @@ impl Engine {
             // anything that was not let through under the policy in force now: a proposal queued
             // as "admit at once", or any write queued before the policy changed.
             let reviewed = (entry == Entry::Propose && type_gate.judges_statements()) || (type_gate.needs_review() && (entry != Entry::Commit || it.policy_changed));
+            // MEM-02: a procedure is promoted on explicit confirmation, or when the same
+            // correction has been given often enough. Only under the confirmation gate: where
+            // a tenant raised the type to approval, repeats never commit. The caller marks a
+            // correction (`metadata.correction`), or the gate reads the statement as one.
+            let correction = m.kind == MemoryKind::Procedural
+                && type_gate == TypeGate::Confirmation
+                && reviewed
+                && self.cfg.intake.procedural_corrections > 0
+                && (m.metadata.get("correction").and_then(|v| v.as_bool()) == Some(true) || statement == Some(Statement::Correction));
             m.status = if !reasons.is_empty() {
                 m.metadata["quarantine_reasons"] = json!(reasons);
                 it.note = Some(format!("quarantined: looks like an instruction to the agent ({})", reasons.join(", ")));
@@ -842,6 +858,17 @@ impl Engine {
                         self.cfg.intake.preference_signals
                     ));
                 }
+                MemoryStatus::Candidate
+            } else if correction {
+                // Counted like a signal, on one record; no expiry, since a reviewer may still
+                // confirm it at any time.
+                m.metadata["held"] = json!("signal");
+                m.metadata["signals"] = json!(1);
+                m.metadata["counted"] = json!("correction");
+                it.note = Some(format!(
+                    "held as a candidate: a correction becomes a procedure once it has been given {} times, or when a reviewer confirms it",
+                    correction_threshold(&self.cfg.intake)
+                ));
                 MemoryStatus::Candidate
             } else if reviewed {
                 it.note = Some("waiting for a reviewer".into());
@@ -969,13 +996,23 @@ impl Engine {
                         let Some(h) = self.store.get(tenant, held).await? else { continue };
                         // The same preference: same scope and kind, and the same key if keyed
                         // (two keys with similar wording are two preferences).
-                        let same = h.scope == m.scope && h.kind == m.kind && h.metadata.get("pref_key") == m.metadata.get("pref_key");
+                        // A correction repeats a correction, a signal a signal.
+                        let same = h.scope == m.scope
+                            && h.kind == m.kind
+                            && h.metadata.get("pref_key") == m.metadata.get("pref_key")
+                            && h.metadata.get("counted") == m.metadata.get("counted");
                         let open = h.expires_at.is_none_or(|t| t > Utc::now()) && same;
                         if open && sim >= icfg.confirm_threshold && !items_signalled.contains(&held) {
                             let seen = h.metadata.get("signals").and_then(|n| n.as_u64()).unwrap_or(1) as u32 + 1;
                             // A held signal that also waits for a reviewer is counted, never
                             // committed by its repeats.
-                            let commits = seen >= icfg.preference_signals && h.metadata.get("review").and_then(|r| r.as_bool()) != Some(true);
+                            let commits = if h.metadata.get("counted").and_then(|c| c.as_str()) == Some("correction") {
+                                // MEM-02: at the threshold, and only while the type's gate is
+                                // still confirmation (a stricter gate leaves it to its approver).
+                                seen >= correction_threshold(icfg) && policy.of(h.kind).gate == crate::policy::TypeGate::Confirmation
+                            } else {
+                                seen >= icfg.preference_signals && h.metadata.get("review").and_then(|r| r.as_bool()) != Some(true)
+                            };
                             // Committed by this repeat, a keyed preference replaces the value
                             // its scope held, as a stated one would.
                             if let Some(key) = h.metadata.get("pref_key").and_then(|k| k.as_str()).filter(|_| commits) {
@@ -1174,7 +1211,18 @@ impl Engine {
                     action: if commit { "memory.admit" } else { "memory.signal" }.into(),
                     subject: Some(subject.to_string()),
                     memory_id: Some(held),
-                    detail: json!({ "signals": seen, "seen_in": m.id, "reason": if commit { "a repeated signal confirms the preference" } else { "signal seen again" } }),
+                    detail: if m.metadata.get("counted").and_then(|c| c.as_str()) == Some("correction") {
+                        // MEM-02: the promotion names its reason and the count that reached the threshold.
+                        json!({
+                            "signals": seen,
+                            "corrections": seen,
+                            "threshold": correction_threshold(&self.cfg.intake),
+                            "seen_in": m.id,
+                            "reason": if commit { "repeated_correction: the same correction was given often enough to become a procedure" } else { "correction given again" },
+                        })
+                    } else {
+                        json!({ "signals": seen, "seen_in": m.id, "reason": if commit { "a repeated signal confirms the preference" } else { "signal seen again" } })
+                    },
                 });
             }
             for plan in &it.confirms {

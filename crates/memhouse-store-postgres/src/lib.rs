@@ -72,7 +72,7 @@ const NEXT_COLS: [(&str, &str); 5] = [
 const COLS: &str = "m.id, m.tenant, m.subject, m.kind, m.status, m.content, m.session_id, m.turn_ref, \
     m.occurred_at, m.valid_from, m.valid_to, m.supersedes, m.labels, m.tags, m.source, m.confidence, \
     m.metadata, m.created_at, m.expires_at, m.scope_org, m.scope_team, m.scope_agent, m.scope_user, m.scope_session, \
-    m.prov_agent, m.prov_user, m.policy_version, m.request_key, m.extractor, m.extractor_config, m.language";
+    m.prov_agent, m.prov_user, m.policy_version, m.request_key, m.extractor, m.extractor_config, m.language, m.stale_since";
 
 fn vec_literal(v: &[f32]) -> String {
     let mut s = String::with_capacity(v.len() * 10 + 2);
@@ -135,8 +135,17 @@ fn row_to_memory(r: &PgRow) -> anyhow::Result<Memory> {
             extractor_config: r.try_get("extractor_config")?,
         },
         language: r.try_get("language")?,
+        stale_since: r.try_get("stale_since")?,
     })
 }
+
+fn row_to_code_ref(r: &PgRow) -> anyhow::Result<CodeRef> {
+    Ok(CodeRef { path: r.try_get("path")?, blob_hash: r.try_get("blob_hash")?, stale_since: r.try_get("stale_since")?, seen_hash: r.try_get("seen_hash")? })
+}
+
+/// A record is stale from the earliest time one of its references became stale (TPL-04).
+const RESTALE_SQL: &str = "UPDATE mh_memory m SET stale_since = (SELECT min(c.stale_since) FROM mh_code_ref c WHERE c.memory_id = m.id) \
+     WHERE m.tenant = $1 AND m.id = ANY($2) RETURNING m.id, m.stale_since";
 
 fn row_to_link(r: &PgRow) -> anyhow::Result<Link> {
     Ok(Link {
@@ -362,6 +371,17 @@ CREATE OR REPLACE TRIGGER mh_intake_embedder_guard BEFORE INSERT ON mh_intake FO
 
 /// v8 (G13): a tenant's evaluation suites and the result of each replay, kept with the policy
 /// version it ran under (QUAL-04). Neither is memory: they are not exported.
+/// Schema v10 (G19, TPL-04): staleness of code references. A reference remembers since when its
+/// file has other content than the stored hash, and the hash last seen; the record carries the
+/// earliest of them, so the recall statement filters on its own row and reads no other table.
+/// Expand-only: every column is nullable, and a version 9 process that writes a record leaves
+/// them empty (not stale).
+const SCHEMA_V10_DDL: &str = r#"
+ALTER TABLE mh_code_ref ADD COLUMN IF NOT EXISTS stale_since timestamptz;
+ALTER TABLE mh_code_ref ADD COLUMN IF NOT EXISTS seen_hash text;
+ALTER TABLE mh_memory ADD COLUMN IF NOT EXISTS stale_since timestamptz;
+"#;
+
 /// Schema v9 (G36): the language of each record, and a keyword index in that language's
 /// text-search configuration. Expand-only: `tsv` (the `english` index) stays on every row;
 /// `tsv_lang` is filled, by the trigger, only for a record whose language has another
@@ -706,6 +726,8 @@ const SEARCH_FILTERS: &str = r#"    -- As-of recall also sees versions supersede
     AND (cardinality($18::timestamptz[]) = 0 OR EXISTS (
       SELECT 1 FROM unnest($18::timestamptz[], $19::timestamptz[]) w(s, e)
       WHERE m.occurred_at >= w.s AND m.occurred_at < w.e))
+    -- A record about a file that changed since is left out until it is revalidated (TPL-04).
+    AND ($27::bool OR m.stale_since IS NULL)
 "#;
 
 /// The recall statement. `filtered = false` drops every filter but tenant and subject: the
@@ -819,9 +841,9 @@ fn multi_search_sql(n: usize, v: Variant, ts: &[String]) -> String {
     (0..n).map(|i| format!("({})", renumber(&one, i * SEARCH_PARAMS).replace("0 AS probe", &format!("{i} AS probe")))).collect::<Vec<_>>().join("\nUNION ALL\n")
 }
 
-/// Parameters of one recall statement (the last, the granting agents, is only read by the
+/// Parameters of one recall statement (`$26`, the granting agents, is only read by the
 /// statement of a reader that has grants).
-const SEARCH_PARAMS: usize = 26;
+const SEARCH_PARAMS: usize = 27;
 
 /// Shift every `$N` in `sql` by `by`.
 fn renumber(sql: &str, by: usize) -> String {
@@ -848,6 +870,15 @@ fn renumber(sql: &str, by: usize) -> String {
 }
 
 /// Bind a `SearchQuery` to `sql` (the recall statement, or an EXPLAIN of it).
+///
+/// The statement is not kept as a prepared statement on the connection (`persistent(false)`),
+/// so Postgres plans it for the values of each call. A kept statement is given a generic plan
+/// after five executions whenever that plan's estimated cost is lower, and for this statement
+/// the generic plan is the wrong one: it knows no subject, estimates one row, and joins by
+/// nested loops (68 ms against 10 ms for a subject of 1,294 records, as a prepared statement
+/// in psql on the benchmark database, 27 November 2026). On the benchmark's new subjects the
+/// two estimates are nearly equal, so the choice flipped from run to run, and with it the
+/// search time (G19).
 fn search_query<'a>(
     sql: String,
     q: &'a SearchQuery,
@@ -856,7 +887,7 @@ fn search_query<'a>(
     use_kw: bool,
     use_vec: bool,
 ) -> sqlx::query::Query<'a, sqlx::Postgres, sqlx::postgres::PgArguments> {
-    bind_search(sqlx::query(sqlx::AssertSqlSafe(sql)), q, tsq, kinds, use_kw, use_vec)
+    bind_search(sqlx::query(sqlx::AssertSqlSafe(sql)).persistent(false), q, tsq, kinds, use_kw, use_vec)
 }
 
 /// The probe-dependent values of a `SearchQuery`.
@@ -930,6 +961,7 @@ fn bind_search<'a>(
         .bind(&q.scope.session)
         .bind(q.include_candidates)
         .bind(&q.shared_agents)
+        .bind(q.include_stale)
 }
 
 /// The schema as it was at version 1, kept verbatim: `migrate` runs it, then the v2 additions,
@@ -1139,7 +1171,7 @@ impl PgStore {
                  session_id, turn_ref, occurred_at, valid_from, valid_to, expires_at, supersedes, superseded_by, labels, tags, \
                  scope_org, scope_team, scope_agent, scope_user, scope_session, source, confidence, \
                  prov_agent, prov_user, policy_version, request_key, extractor, extractor_config, metadata, created_at, updated_at, \
-                 language, ts_config) ",
+                 language, ts_config, stale_since) ",
             );
             let text_search = self.text_search.lock().unwrap().clone();
             qb.push_values(chunk, |mut b, w| {
@@ -1188,7 +1220,9 @@ impl PgStore {
                     .push_bind(&r.language)
                     // NULL keeps the `english` index every record has; another configuration
                     // gets its own (`tsv_lang`, filled by a trigger).
-                    .push_bind(r.language.as_ref().and_then(|l| text_search.iter().find(|(code, _)| code == l)).map(|(_, cfg)| cfg.clone()).filter(|cfg| cfg != "english"));
+                    .push_bind(r.language.as_ref().and_then(|l| text_search.iter().find(|(code, _)| code == l)).map(|(_, cfg)| cfg.clone()).filter(|cfg| cfg != "english"))
+                    // An imported record is as stale as its references say (TPL-04).
+                    .push_bind(r.code_refs.iter().filter_map(|c| c.stale_since).min());
             });
             if skip_existing {
                 qb.push(" ON CONFLICT (id) DO NOTHING");
@@ -1211,12 +1245,14 @@ impl PgStore {
                     .await?;
             }
             for c in &r.code_refs {
-                sqlx::query("INSERT INTO mh_code_ref (memory_id, tenant, subject, path, blob_hash) VALUES ($1, $2, $3, $4, $5)")
+                sqlx::query("INSERT INTO mh_code_ref (memory_id, tenant, subject, path, blob_hash, stale_since, seen_hash) VALUES ($1, $2, $3, $4, $5, $6, $7)")
                     .bind(r.id)
                     .bind(&r.tenant)
                     .bind(&r.subject)
                     .bind(&c.path)
                     .bind(&c.blob_hash)
+                    .bind(c.stale_since)
+                    .bind(&c.seen_hash)
                     .execute(&mut *tx)
                     .await?;
             }
@@ -1585,6 +1621,7 @@ impl Store for PgStore {
         sqlx::raw_sql(SCHEMA_V7_DDL).execute(&self.pool).await?;
         sqlx::raw_sql(SCHEMA_V8_DDL).execute(&self.pool).await?;
         sqlx::raw_sql(SCHEMA_V9_DDL).execute(&self.pool).await?;
+        sqlx::raw_sql(SCHEMA_V10_DDL).execute(&self.pool).await?;
         for (k, v) in [
             ("schema_version", SCHEMA_VERSION.to_string()),
             ("embedding_dim", dim.to_string()),
@@ -1767,8 +1804,8 @@ impl Store for PgStore {
              FROM mh_structured s JOIN mh_memory m ON m.id = s.memory_id \
              WHERE s.tenant = $1 AND s.subject = $2 AND m.tenant = $1 AND m.subject = $2 \
              {filters} \
-             AND ($27::text IS NULL OR s.record_type = $27) AND ($28::jsonb IS NULL OR s.attrs @> $28) \
-             AND (cardinality($29::text[]) = 0 OR EXISTS (SELECT 1 FROM jsonb_each_text(s.attrs) e WHERE lower(e.value) = ANY($29))) \
+             AND ($28::text IS NULL OR s.record_type = $28) AND ($29::jsonb IS NULL OR s.attrs @> $29) \
+             AND (cardinality($30::text[]) = 0 OR EXISTS (SELECT 1 FROM jsonb_each_text(s.attrs) e WHERE lower(e.value) = ANY($30))) \
              ORDER BY m.created_at DESC, m.id LIMIT $15"
         );
         let lower: Vec<String> = values.iter().map(|v| v.to_lowercase()).collect();
@@ -1817,7 +1854,8 @@ impl Store for PgStore {
         let probes: Vec<Probe> = qs.iter().map(Probe::of).collect();
         // The probes of one recall share its reader, so its variant.
         let sql = multi_search_sql(qs.len(), qs.first().map(Variant::of).unwrap_or_default(), &self.ts());
-        let mut query = sqlx::query(sqlx::AssertSqlSafe(sql));
+        // Planned for its values, like the statement of one probe (`search_query`).
+        let mut query = sqlx::query(sqlx::AssertSqlSafe(sql)).persistent(false);
         for (q, p) in qs.iter().zip(&probes) {
             query = bind_search(query, q, &p.tsq, p.kinds.clone(), p.use_kw, p.use_vec);
         }
@@ -2327,13 +2365,13 @@ impl Store for PgStore {
             .map(|r| -> anyhow::Result<Structured> { Ok(Structured { record_type: r.try_get("record_type")?, attrs: r.try_get("attrs")? }) })
             .transpose()?;
         let code_refs =
-            sqlx::query("SELECT c.path, c.blob_hash FROM mh_code_ref c JOIN mh_memory m ON m.id = c.memory_id WHERE m.tenant = $1 AND c.memory_id = $2 ORDER BY c.path")
+            sqlx::query("SELECT c.path, c.blob_hash, c.stale_since, c.seen_hash FROM mh_code_ref c JOIN mh_memory m ON m.id = c.memory_id WHERE m.tenant = $1 AND c.memory_id = $2 ORDER BY c.path")
                 .bind(tenant)
                 .bind(id)
                 .fetch_all(&self.pool)
                 .await?
                 .iter()
-                .map(|r| Ok(CodeRef { path: r.try_get("path")?, blob_hash: r.try_get("blob_hash")? }))
+                .map(row_to_code_ref)
                 .collect::<anyhow::Result<Vec<_>>>()?;
         Ok((structured, code_refs))
     }
@@ -2718,7 +2756,7 @@ impl Store for PgStore {
     async fn export_records(&self, tenant: &str, subject: Option<&str>, after: Option<Uuid>, limit: usize) -> anyhow::Result<Vec<RecordLine>> {
         let rows = sqlx::query(trusted_sql!(
             "SELECT {COLS}, m.content_hash, m.superseded_by, m.updated_at, m.alt_hash, s.record_type, s.attrs, \
-               coalesce((SELECT jsonb_agg(jsonb_build_object('path', c.path, 'blob_hash', c.blob_hash) ORDER BY c.path) \
+               coalesce((SELECT jsonb_agg(jsonb_strip_nulls(jsonb_build_object('path', c.path, 'blob_hash', c.blob_hash, 'stale_since', c.stale_since, 'seen_hash', c.seen_hash)) ORDER BY c.path) \
                          FROM mh_code_ref c WHERE c.memory_id = m.id), '[]'::jsonb) AS code_refs \
              FROM mh_memory m LEFT JOIN mh_structured s ON s.memory_id = m.id \
              WHERE m.tenant = $1 AND ($2::text IS NULL OR m.subject = $2) AND {} \
@@ -3156,6 +3194,101 @@ impl Store for PgStore {
         .bind(blob_hash)
         .fetch_all(&self.pool)
         .await?)
+    }
+
+    #[tracing::instrument(name = "db.code_refs_observe", skip_all, fields(db.system = "postgresql", db.operation = "UPDATE", files = files.len()))]
+    async fn code_refs_observe(&self, tenant: &str, subject: &str, files: &[FileState], at: DateTime<Utc>) -> anyhow::Result<Vec<RefChange>> {
+        let paths = memhouse_core::staleness::paths_of(files);
+        if paths.is_empty() {
+            return Ok(vec![]);
+        }
+        let mut tx = self.pool.begin().await?;
+        // Locked in one order (the primary key), so two observations of the same files queue
+        // instead of deadlocking; `OF c`: the record rows are only read here.
+        let rows: Vec<memhouse_core::staleness::RefRow> = sqlx::query(
+            "SELECT c.memory_id, c.path, c.blob_hash, c.stale_since, c.seen_hash FROM mh_code_ref c JOIN mh_memory m ON m.id = c.memory_id \
+             WHERE c.tenant = $1 AND c.subject = $2 AND c.path = ANY($3) AND m.tenant = $1 AND m.status IN ('committed', 'candidate') \
+             ORDER BY c.memory_id, c.path FOR UPDATE OF c",
+        )
+        .bind(tenant)
+        .bind(subject)
+        .bind(&paths)
+        .fetch_all(&mut *tx)
+        .await?
+        .iter()
+        .map(|r| Ok(memhouse_core::staleness::RefRow { id: r.try_get("memory_id")?, code: row_to_code_ref(r)? }))
+        .collect::<anyhow::Result<_>>()?;
+        let updates = memhouse_core::staleness::plan(&rows, files, at);
+        if updates.is_empty() {
+            return Ok(vec![]);
+        }
+        // Removals first: a reference dropped by a rename frees nothing another one moves onto
+        // (the plan drops it because the target exists), but the order keeps that obvious.
+        for u in updates.iter().filter(|u| u.now.is_none()) {
+            sqlx::query("DELETE FROM mh_code_ref WHERE memory_id = $1 AND path = $2").bind(u.id).bind(&u.path).execute(&mut *tx).await?;
+        }
+        for u in &updates {
+            let Some(c) = &u.now else { continue };
+            sqlx::query("UPDATE mh_code_ref SET path = $3, stale_since = $4, seen_hash = $5 WHERE memory_id = $1 AND path = $2")
+                .bind(u.id)
+                .bind(&u.path)
+                .bind(&c.path)
+                .bind(c.stale_since)
+                .bind(&c.seen_hash)
+                .execute(&mut *tx)
+                .await?;
+        }
+        let mut ids: Vec<Uuid> = updates.iter().map(|u| u.id).collect();
+        ids.sort();
+        ids.dedup();
+        let stale: std::collections::HashMap<Uuid, Option<DateTime<Utc>>> = sqlx::query_as(RESTALE_SQL).bind(tenant).bind(&ids).fetch_all(&mut *tx).await?.into_iter().collect();
+        tx.commit().await?;
+        Ok(updates
+            .into_iter()
+            .filter_map(|u| u.change)
+            .map(|mut c| {
+                c.stale = stale.get(&c.id).is_some_and(|s| s.is_some());
+                c
+            })
+            .collect())
+    }
+
+    async fn code_refs_at(&self, tenant: &str, subject: &str, paths: &[String]) -> anyhow::Result<Vec<(Uuid, CodeRef)>> {
+        sqlx::query(
+            "SELECT c.memory_id, c.path, c.blob_hash, c.stale_since, c.seen_hash FROM mh_code_ref c \
+             WHERE c.tenant = $1 AND c.subject = $2 AND c.path = ANY($3) ORDER BY c.memory_id, c.path",
+        )
+        .bind(tenant)
+        .bind(subject)
+        .bind(paths)
+        .fetch_all(&self.pool)
+        .await?
+        .iter()
+        .map(|r| Ok((r.try_get("memory_id")?, row_to_code_ref(r)?)))
+        .collect()
+    }
+
+    #[tracing::instrument(name = "db.code_refs_revalidate", skip_all, fields(db.system = "postgresql", db.operation = "UPDATE"))]
+    async fn code_refs_revalidate(&self, tenant: &str, id: Uuid, refs: Option<&[CodeRef]>) -> anyhow::Result<Option<Vec<CodeRef>>> {
+        const REFS: &str = "SELECT c.path, c.blob_hash, c.stale_since, c.seen_hash FROM mh_code_ref c JOIN mh_memory m ON m.id = c.memory_id \
+             WHERE m.tenant = $1 AND c.memory_id = $2 ORDER BY c.path";
+        let mut tx = self.pool.begin().await?;
+        if sqlx::query("SELECT 1 FROM mh_memory WHERE tenant = $1 AND id = $2 FOR UPDATE").bind(tenant).bind(id).fetch_optional(&mut *tx).await?.is_none() {
+            return Ok(None);
+        }
+        let stored: Vec<CodeRef> = sqlx::query(REFS).bind(tenant).bind(id).fetch_all(&mut *tx).await?.iter().map(row_to_code_ref).collect::<anyhow::Result<_>>()?;
+        for c in memhouse_core::staleness::revalidated(&stored, refs)? {
+            sqlx::query("UPDATE mh_code_ref SET blob_hash = $3, stale_since = NULL, seen_hash = NULL WHERE memory_id = $1 AND path = $2")
+                .bind(id)
+                .bind(&c.path)
+                .bind(&c.blob_hash)
+                .execute(&mut *tx)
+                .await?;
+        }
+        sqlx::query(RESTALE_SQL).bind(tenant).bind(vec![id]).execute(&mut *tx).await?;
+        let after = sqlx::query(REFS).bind(tenant).bind(id).fetch_all(&mut *tx).await?.iter().map(row_to_code_ref).collect::<anyhow::Result<_>>()?;
+        tx.commit().await?;
+        Ok(Some(after))
     }
 
     async fn embedding_identity(&self) -> anyhow::Result<(Option<EmbeddingIdentity>, Option<EmbeddingIdentity>)> {

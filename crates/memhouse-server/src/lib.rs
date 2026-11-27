@@ -2,6 +2,7 @@
 //! HTTP gateway: REST API, streamable-HTTP MCP endpoint and the Memory Browser page.
 
 pub mod embedded;
+pub mod hook;
 pub mod mcp;
 pub mod migrate;
 pub mod openapi;
@@ -249,6 +250,9 @@ pub fn router(engine: Engine) -> Router {
         .route("/v1/labels", post(relabel))
         .route("/v1/review", post(review))
         .route("/v1/promote", post(promote))
+        .route("/v1/code/touched", post(file_touched))
+        .route("/v1/code/changed", post(files_changed))
+        .route("/v1/code/revalidate", post(revalidate))
         .route("/v1/subjects/{subject}/preferences", get(preferences))
         .route("/v1/grants", get(grants).post(grant_create))
         .route("/v1/grants/{id}", axum::routing::delete(grant_revoke))
@@ -421,6 +425,20 @@ async fn grant_revoke(Who(c): Who, PathParam(id): PathParam<Uuid>) -> ApiResult<
 
 async fn relabel(Who(c): Who, Body(req): Body<RelabelRequest>) -> ApiResult<Memory> {
     Ok(Json(c.relabel(req).await?))
+}
+
+/// File-touched recall (TPL-05): what a harness hook asks when the agent opens or edits a file.
+async fn file_touched(Who(c): Who, Body(req): Body<FileTouchedRequest>) -> ApiResult<FileTouchedResult> {
+    Ok(Json(c.file_touched(req).await?))
+}
+
+/// Files changed in batch (TPL-04): what a post-commit hook reports.
+async fn files_changed(Who(c): Who, Body(req): Body<FilesChangedRequest>) -> ApiResult<FilesChangedResult> {
+    Ok(Json(c.files_changed(req).await?))
+}
+
+async fn revalidate(Who(c): Who, Body(req): Body<RevalidateRequest>) -> ApiResult<RevalidateResult> {
+    Ok(Json(c.revalidate(req).await?))
 }
 
 async fn review(Who(c): Who, Body(req): Body<ReviewRequest>) -> ApiResult<ReviewResult> {

@@ -74,6 +74,35 @@ path from 0.x data other than export and import.
   write. With English alone, behaviour is unchanged. `memhouse lang list|check|detect|schema`;
   API 1.8.0 (`language` on a record, `language.enabled` in a policy spec), schema version 9.
   See [docs/languages.md](docs/languages.md).
+- Coding template: memories linked to files, git-aware staleness and file-touched recall. A
+  memory names the files it is about with their content hash (`code_refs`); when a file is
+  reported changed, deleted or renamed with other content, the memory is stale and left out of
+  default recall, in both profiles, until it is revalidated (`POST /v1/code/revalidate`),
+  revised or forgotten. `POST /v1/code/touched` returns the memories linked to files an agent
+  opened or edited, under the access decision of a recall, with those needing revalidation
+  listed apart; `POST /v1/code/changed` reports a commit's files. `memhouse hook file-opened |
+  file-edited | post-commit` are the adapters harnesses and git run: they compute the git blob
+  hash in process, only call the API and never block a read, an edit or a commit;
+  `memhouse connect claude-code --hooks` and `gemini --hooks` install them without touching
+  other hooks, `memhouse hook install-git` the post-commit hook, and `memhouse remember
+  --file` links a memory from the command line. MCP: `file_memories` and `revalidate`, and
+  `code_refs` on `remember` and `revise`. API 1.9.0, schema version 10 (`stale_since` and
+  `seen_hash` on a code reference, exported in Memory Format from schema 10). See
+  [docs/coding.md](docs/coding.md).
+- Procedural memory is promoted on repeated correction: an agent's procedural proposal marked
+  as a correction is committed without a reviewer once the same correction has been given
+  `[intake] procedural_corrections` times (3; one occurrence never promotes, 0 turns it off),
+  audited with the reason and the count. A reviewer's confirmation works as before.
+- Changed: a `procedural` memory is returned by a recall only for a task it matches (two
+  content words in common with the query, a requested tag, or a file named in the new `paths`
+  field); one that does not is listed in the explanation with the reason `task`.
+- Changed: the `coding` profile of `memhouse bench synth` covers the template's memory
+  categories and writes suite format 2 (file links, file changes, file-touched questions), so
+  `bench/suites/coding` is a new suite; it is now a tier 1 run of the benchmark guard. Format
+  1 suites and the other profiles are unchanged.
+- Changed: on Postgres the recall statement is planned for the values of each call instead of
+  being kept as a prepared statement. A kept statement could be given a generic plan that
+  knows no subject and joins by nested loops, several times slower on a large subject.
 - Corrections replace what they correct: a statement with a correction marker ("no longer",
   "actually", "correction:") supersedes every older version of the fact, at a lower similarity
   than an unmarked value update (`[intake] marked_correction_threshold`, 0.6). On the synthetic

@@ -129,8 +129,8 @@ impl SqliteStore {
             "INSERT INTO mh_memory (id, tenant, subject, stok, kind, status, content, content_hash, embedding, embedding_alt, embedding_bits, embedding_alt_bits, \
              alt_hash, embedder, embedder_config, session_id, turn_ref, occurred_at, valid_from, valid_to, expires_at, supersedes, superseded_by, labels, tags, \
              scope_org, scope_team, scope_agent, scope_user, scope_session, source, confidence, prov_agent, prov_user, policy_version, request_key, extractor, \
-             extractor_config, metadata, created_at, updated_at, language) VALUES ({}){}",
-            (1..=42).map(|i| format!("?{i}")).collect::<Vec<_>>().join(", "),
+             extractor_config, metadata, created_at, updated_at, language, stale_since) VALUES ({}){}",
+            (1..=43).map(|i| format!("?{i}")).collect::<Vec<_>>().join(", "),
             if skip_existing { " ON CONFLICT (id) DO NOTHING" } else { "" }
         );
         // Under the write lock: a process still on the identity of before a re-embedding writes
@@ -194,7 +194,9 @@ impl SqliteStore {
                     r.metadata.to_string(),
                     us(r.created_at),
                     us(r.updated_at),
-                    r.language
+                    r.language,
+                    // An imported record is as stale as its references say (TPL-04).
+                    r.code_refs.iter().filter_map(|c| c.stale_since).min().map(us)
                 ],
             )
             .map_err(|e| self.explain(c, e))?;
@@ -211,8 +213,8 @@ impl SqliteStore {
             for code in &r.code_refs {
                 exec(
                     c,
-                    "INSERT INTO mh_code_ref (memory_id, tenant, subject, path, blob_hash) VALUES (?1, ?2, ?3, ?4, ?5)",
-                    params![id, r.tenant, r.subject, code.path, code.blob_hash],
+                    "INSERT INTO mh_code_ref (memory_id, tenant, subject, path, blob_hash, stale_since, seen_hash) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    params![id, r.tenant, r.subject, code.path, code.blob_hash, code.stale_since.map(us), code.seen_hash],
                 )?;
             }
             index_sources(c, &r.tenant, &id, &r.metadata)?;

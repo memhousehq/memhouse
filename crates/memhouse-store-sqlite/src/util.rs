@@ -81,7 +81,7 @@ pub(crate) fn exec(c: &Connection, sql: &str, params: impl Params) -> anyhow::Re
 pub(crate) const COLS: &str = "m.id, m.tenant, m.subject, m.kind, m.status, m.content, m.session_id, m.turn_ref, \
     m.occurred_at, m.valid_from, m.valid_to, m.supersedes, m.labels, m.tags, m.source, m.confidence, \
     m.metadata, m.created_at, m.expires_at, m.scope_org, m.scope_team, m.scope_agent, m.scope_user, m.scope_session, \
-    m.prov_agent, m.prov_user, m.policy_version, m.request_key, m.extractor, m.extractor_config, m.language";
+    m.prov_agent, m.prov_user, m.policy_version, m.request_key, m.extractor, m.extractor_config, m.language, m.stale_since";
 
 pub(crate) fn memory_of(r: &Row) -> anyhow::Result<Memory> {
     let kind: String = r.get("kind")?;
@@ -116,8 +116,16 @@ pub(crate) fn memory_of(r: &Row) -> anyhow::Result<Memory> {
             extractor_config: r.get("extractor_config")?,
         },
         language: r.get("language")?,
+        stale_since: opt_at(r, "stale_since")?,
     })
 }
+
+/// A row of `CODE_REF_COLS`.
+pub(crate) fn code_ref_of(r: &Row) -> anyhow::Result<CodeRef> {
+    Ok(CodeRef { path: r.get("path")?, blob_hash: r.get("blob_hash")?, stale_since: opt_at(r, "stale_since")?, seen_hash: r.get("seen_hash")? })
+}
+
+pub(crate) const CODE_REF_COLS: &str = "c.path, c.blob_hash, c.stale_since, c.seen_hash";
 
 /// Postgres' `@>` on JSON documents: `a` contains `b` when every key of an object in `b` is in
 /// `a` with a contained value, every element of an array in `b` is contained in some element

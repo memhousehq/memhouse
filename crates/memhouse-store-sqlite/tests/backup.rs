@@ -40,6 +40,7 @@ fn record(subject: &str, content: &str) -> NewMemory {
         scope: Scope::default(),
         provenance: Provenance::default(),
         language: None,
+        stale_since: None,
     };
     let hash = memhouse_core::engine::content_hash(&m.content);
     let mut n = NewMemory::new(m, hash);

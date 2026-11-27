@@ -742,6 +742,7 @@ per recall. The governance check `telemetry_overhead` measures it on every guard
 | `memhouse_intake_ack_seconds`, `memhouse_intake_duration_seconds`, `memhouse_intake_freshness_seconds` | | time to the durable acknowledgement (PERF-03), to run the pipeline, and from acknowledgement to stored (PERF-04) |
 | `memhouse_intake_total`, `memhouse_intake_refused_total` | outcome: ok, retry, dead | pipeline runs; writes refused because they could not be queued |
 | `memhouse_gate_statements_total`, `memhouse_gate_corrections_total` | statement | what the gate read writes as; corrections that superseded a record |
+| `memhouse_code_refs_total` | change: flagged, cleared, moved, revalidated | code references that became stale, stopped being stale, followed a rename, or were revalidated ([coding.md](coding.md)) |
 | `memhouse_gate_tier_total` | tier: rules, small, large | the tiered classifier: which tier decided each statement (ECON-04) |
 | `memhouse_gate_tier_capped_total` | | large-model reads refused by the tenant's cap |
 | `memhouse_recall_degraded_total` | | recalls answered empty and flagged after a failure or timeout (PERF-07) |

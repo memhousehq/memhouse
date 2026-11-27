@@ -162,6 +162,7 @@ mod tests {
             scope,
             provenance: Provenance::default(),
             language: None,
+            stale_since: None,
         }
     }
 

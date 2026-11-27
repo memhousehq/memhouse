@@ -185,6 +185,14 @@ impl Embedded {
         Embedded { router: router(engine), key, background: tokio::sync::Mutex::new(Some(background)), closed: AtomicBool::new(false) }
     }
 
+    /// The router alone, with no background worker: for a command that makes a request or two
+    /// and exits (the harness hooks), which must not start a retention pass or take queued
+    /// work from the deployment's own workers. Requests pass the same middleware as ever.
+    pub fn request_only(engine: Engine) -> Embedded {
+        let key = engine.cfg.server.api_keys.first().cloned();
+        Embedded { router: router(engine), key, background: tokio::sync::Mutex::new(None), closed: AtomicBool::new(false) }
+    }
+
     /// One API request: `path` is the path and query of the REST API (`/v1/recall`), `body` a
     /// JSON document. Returns the status and the response body. A header may be given once:
     /// a name repeated in any letter case is an error, and nothing is sent.

@@ -149,6 +149,13 @@ pub struct IntakeConfig {
     /// committed (MEM-01: "explicit statement or repeated signal"). A repeat is the same signal
     /// in the same scope, at or above `confirm_threshold`.
     pub preference_signals: u32,
+    /// Times the same correction must be given before an agent's procedural proposal is
+    /// committed without a reviewer (MEM-02: "promoted only on repeated or explicit
+    /// confirmation"). A correction is a procedural write marked `metadata.correction`, or one
+    /// the gate reads as a correction; a repeat is the same one in the same scope, at or above
+    /// `confirm_threshold`. One occurrence never promotes: 1 is read as 2. 0 turns promotion
+    /// by repetition off, so only a reviewer commits a procedure.
+    pub procedural_corrections: u32,
 }
 
 impl Default for IntakeConfig {
@@ -171,6 +178,7 @@ impl Default for IntakeConfig {
             marked_correction_threshold: 0.6,
             confirm_threshold: 0.9,
             preference_signals: 2,
+            procedural_corrections: 3,
         }
     }
 }

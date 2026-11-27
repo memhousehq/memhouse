@@ -25,7 +25,8 @@ metrics).
 
 ## The suite format
 
-A suite is a YAML file (JSON also works). The format version is 1.
+A suite is a YAML file (JSON also works). The format version is 1, or 2 for a suite with
+[code](#suites-with-code).
 
 ```yaml
 name: support-renewals        # letters, digits, '.', '_' and '-'
@@ -76,6 +77,55 @@ generate: { profile: personal, seed: 7, conversations: 20 }
 and column for a syntax error, the conversation, session and turn for a logical one (a question
 about a key that no earlier turn commits, an id used twice).
 
+### Suites with code
+
+Format 2 adds what the [coding template](coding.md) needs: statements linked to files, files
+that change between sessions, and questions that open a file. A suite that uses any of it says
+`format: 2`; format 1 suites are read as before, and a build that knows only format 1 refuses a
+format 2 suite by its number.
+
+```yaml
+format: 2
+name: repo-errors
+conversations:
+  - id: shop
+    sessions:
+      - turns:
+          - say: Errors are reported as typed error enums.
+            key: errors
+            files: [src/errors.rs]          # the memory is linked to the file as it is now
+        ask:
+          - { q: Opening src/errors.rs, key: errors, touch: src/errors.rs }
+      - changes:                             # since the session before, as a commit reports them
+          - { path: src/errors.rs }          # edit (the default): the memory is stale
+        turns:
+          - say: Thanks.
+            expect: ignore
+        ask:
+          - { q: How are errors reported?, key: errors, stale: true }
+          - { q: Opening src/errors.rs, key: errors, touch: src/errors.rs, stale: true }
+      - changes:
+          - { path: src/errors.rs, change: rename, to: src/error/mod.rs }
+        revalidate: [errors]                 # confirmed against the file as it is now
+        turns:
+          - say: Looks good.
+            expect: ignore
+        ask:
+          - { q: Opening the errors module, key: errors, touch: src/error/mod.rs }
+```
+
+| Field | Meaning |
+|---|---|
+| `files` (turn) | files of the conversation's repository the statement is about: the memory is written with a code reference to each, at the file's content at that point |
+| `changes` (session) | file changes since the session before, reported before the session's turns as a post-commit hook reports them: `edit` (the default), `delete`, or `rename` with `to`. A rename keeps the content: to rename and edit, list both |
+| `revalidate` (session) | keys whose current record is revalidated, after `changes` and before the turns |
+| `touch` (question) | a file-touched question: instead of a recall the file is opened, and the key's current record must be among the memories linked to it |
+| `stale` (question) | the key's current record was written about an earlier content of its file, so it must be **withheld**: a recall must not return it, and a file-touched question must list it as needing revalidation |
+
+The replay keeps a repository per conversation (a version per file), so a file's hash changes
+with an edit and not with a rename. Code is replayed with `remember`; a replay as ingested
+conversations (`--ingest`) writes no file links and skips these questions.
+
 ## The synthetic timeline generator
 
 ```bash
@@ -88,8 +138,17 @@ and small talk. Every turn carries its ground truth, and every session ends with
 questions: first about what changed in the session, then about what was corrected before.
 
 - Profiles: `personal`, `support`, `coding`, `sales`, `success` (one per template).
+- The `coding` profile covers the template's memory categories: conventions (formatter, error
+  handling, default branch, review rule), architecture decisions (storage, background jobs),
+  pitfalls (a flaky test, a call that blocks the request handlers) and build or test quirks
+  (test runner, package manager, a release flag), each with its corrections. Its statements
+  are linked to files; between sessions the files are edited, renamed or deleted, and some
+  stale memories are revalidated; checkpoints open files as well as ask questions. It writes
+  [format 2](#suites-with-code) suites.
 - The same profile, seed and size give the same suite, byte for byte, on every machine and in
-  every release: the generator has its own random numbers.
+  every release: the generator has its own random numbers. One exception so far: the `coding`
+  profile was extended on 27 November 2026 (G19), so a `coding` suite generated before that
+  date is a different suite, with another hash; the other profiles were not touched.
 - Each conversation has its own random stream, so a larger suite starts with the smaller one.
 
 Starter suites of 20 conversations per template are in [`bench/suites/`](../bench/suites).
@@ -108,6 +167,8 @@ committed and valid at the checkpoint.
 | F1 | the harmonic mean of precision and recall, for storage and for retrieval |
 | Stale-fact rate | of the questions about a fact that was corrected, the part answered with a stale version in the top `k` |
 | Contamination rate | of the plans and guesses, the part committed as facts |
+| File-touched recall | suites with code: of the file-touched questions about a memory that is not stale, the part answered with it among the linked memories (`touched_recall`) |
+| Stale memories withheld | suites with code: of the questions about a memory whose file changed since, the part where it was withheld: not recalled, and listed as needing revalidation when its file is opened (`stale_withheld`). Such a question is not counted in retrieval precision or recall |
 
 Reports give each with a 95% bootstrap interval over conversations. A metric the suite has
 nothing to measure on (no question, no correction, no plan) is left out, not reported as zero.

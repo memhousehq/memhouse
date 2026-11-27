@@ -36,6 +36,7 @@ pub(crate) fn memory(tenant: &str, subject: &str, content: &str) -> Memory {
         scope: Scope::default(),
         provenance: Provenance::default(),
         language: None,
+        stale_since: None,
     }
 }
 

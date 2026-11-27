@@ -351,6 +351,19 @@ retrieval are precision / recall / **F1**, in percent.
 The reference suite has 8,511 turns and 10,289 facts at checkpoints; its replay took 5 minutes on a
 laptop that was busy with other work. Brackets are 95% bootstrap intervals over conversations.
 
+From 27 November 2026 `coding-starter` is another suite than the one in these tables: the
+`coding` profile now covers the coding template's memory categories and has code (statements
+linked to files, files edited, renamed and deleted between sessions, files opened at
+checkpoints; [evaluation.md](evaluation.md#suites-with-code)). The same day, same model and
+policy, 20 conversations, 335 turns:
+
+| Suite | Questions | Storage | Retrieval (top 5) | Stale facts returned | Contamination | File-touched recall | Stale memories withheld |
+|---|---|---|---|---|---|---|---|
+| `coding-starter` (from 27 November 2026) | 254 recalled, 198 files opened, 114 about a stale memory | 94.6 / 100.0 / **97.2** | 95.3 / 100.0 / **97.6** | 16.4 | 0.0 | 100.0 (198 of 198) | 100.0 (114 of 114) |
+
+It is a tier 1 run of the [benchmark guard](roadmap.md#3-the-benchmark-guard) beside
+`personal-starter`.
+
 Before the correction rule was changed (13 November 2026, the same suites):
 
 | Suite | Storage F1 | Retrieval F1 | Stale facts returned |

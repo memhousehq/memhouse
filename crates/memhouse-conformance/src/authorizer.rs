@@ -36,7 +36,17 @@ fn says(d: &Decision) -> String {
 pub async fn run_authorizer_kit(a: &dyn Authorizer) -> Report {
     let mut r = Report::new("authorizer", a.name());
     let agent = identity(PrincipalKind::Agent, "agent:kit", &[perm::READ, perm::WRITE, perm::FORGET]);
-    let ops = [Operation::Recall, Operation::Get, Operation::List, Operation::Remember, Operation::Revise, Operation::Ingest, Operation::Forget(ForgetScope::Record)];
+    let ops = [
+        Operation::Recall,
+        Operation::Get,
+        Operation::List,
+        Operation::Remember,
+        Operation::Revise,
+        Operation::Ingest,
+        Operation::Forget(ForgetScope::Record),
+        Operation::CodeObserve,
+        Operation::Revalidate,
+    ];
 
     let read = a.authorize(&agent, &request(Operation::Recall)).await;
     r.check("allows_what_it_grants", "an agent with read permission, in its tenant and subjects, may recall", unless(read.allowed, || says(&read)));
