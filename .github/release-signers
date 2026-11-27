@@ -7,3 +7,4 @@
 # signed by any other key, so the release workflow does nothing for an unsigned or foreign tag.
 # Public keys only. A change to this file needs an owner's review (CODEOWNERS).
 # docs/release.md says how to make a signing key and add it here.
+3368890+aleksei-s-popov@users.noreply.github.com namespaces="git" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBdJob2JH5XmXC49NXbXpsGW0kYFrmgdBvISBN+xSrSI

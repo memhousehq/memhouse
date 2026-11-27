@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/*", "xtask", "bindings/python", "bindings/node"]
 
 [workspace.package]
-version = "2.0.0"
+version = "2.0.0-rc.1"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/memhousehq/memhouse"
@@ -15,13 +15,13 @@ categories = ["database", "web-programming::http-server"]
 rust-version = "1.94"
 
 [workspace.dependencies]
-memhouse-core = { path = "crates/memhouse-core", version = "2.0.0" }
-memhouse-store-postgres = { path = "crates/memhouse-store-postgres", version = "2.0.0" }
-memhouse-store-sqlite = { path = "crates/memhouse-store-sqlite", version = "2.0.0" }
-memhouse-models = { path = "crates/memhouse-models", version = "2.0.0" }
-memhouse-server = { path = "crates/memhouse-server", version = "2.0.0" }
-memhouse-bench = { path = "crates/memhouse-bench", version = "2.0.0" }
-memhouse-conformance = { path = "crates/memhouse-conformance", version = "2.0.0" }
+memhouse-core = { path = "crates/memhouse-core", version = "2.0.0-rc.1" }
+memhouse-store-postgres = { path = "crates/memhouse-store-postgres", version = "2.0.0-rc.1" }
+memhouse-store-sqlite = { path = "crates/memhouse-store-sqlite", version = "2.0.0-rc.1" }
+memhouse-models = { path = "crates/memhouse-models", version = "2.0.0-rc.1" }
+memhouse-server = { path = "crates/memhouse-server", version = "2.0.0-rc.1" }
+memhouse-bench = { path = "crates/memhouse-bench", version = "2.0.0-rc.1" }
+memhouse-conformance = { path = "crates/memhouse-conformance", version = "2.0.0-rc.1" }
 
 anyhow = "1"
 thiserror = "2"
