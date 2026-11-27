@@ -321,7 +321,12 @@ words are added.
   replaces, with the hashes the reviser had before them. If a file is reported with other
   content between the revision being made and being stored (changed, restored or deleted),
   that reference starts stale: the revision was written about content the file no longer
-  has. A file renamed in between with the same content is followed. A revision that names
+  has. A file renamed in between is followed when exactly one of the replaced version's
+  files has the content the reviser read and no other reference claims it. Otherwise
+  (renamed and changed, renamed and deleted, or two candidates) the reference stays at the
+  path and with the hash the reviser read, and starts stale: the revision is left out of
+  recall until that path is reported with that content, or the memory is revalidated or
+  revised with the file's new path. A revision that names
   its own `code_refs` starts stale where the predecessor's reference to the same path is
   stale with another hash than the revision names. What MemHouse cannot know is not judged:
   a hash or a path a revision names itself that its predecessor never saw is taken as the

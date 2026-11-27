@@ -527,12 +527,26 @@ pub async fn run_store_kit(store: Arc<dyn Store>) -> Report {
             // restored and the second renamed.
             store.code_refs_observe(t, repo, &[FileState::present("src/u1.rs", "u1"), FileState::renamed("src/u2.rs", "src/u3.rs", "v1")], at, &memhouse_core::traits::no_audit).await?;
             let taken_after = revision(taken, vec![CodeRef::new("src/u1.rs", "u2"), CodeRef::new("src/u2.rs", "v1")], true).await?;
-            // Read by the reviser as `r1.rs`; then renamed and deleted before the revision is
-            // stored. The revision keeps the reference, stale: it is about a file that is gone.
-            let vanished = linked("The report generator caches its templates.", vec![CodeRef::new("src/r1.rs", "q1")]).await?;
-            store.code_refs_observe(t, repo, &[FileState::renamed("src/r1.rs", "src/r2.rs", "q1"), FileState::deleted("src/r2.rs")], at, &memhouse_core::traits::no_audit).await?;
-            let vanished_after = revision(vanished, vec![CodeRef::new("src/r1.rs", "q1")], true).await?;
-            let kept_gone = vanished_after == (vec![("src/r2.rs".to_string(), "q1".to_string(), true, None)], true);
+            let vanished = linked("The report generator caches its templates.", vec![CodeRef::new("src/r1.rs", "q1"), CodeRef::new("src/r3.rs", "q3")]).await?;
+            // Two files, each renamed and then deleted, the second first. Nothing tells which
+            // deleted file was which: each reference stays at the path and with the hash the
+            // reviser read for it, stale, and none appears at a path that was not read.
+            store
+                .code_refs_observe(
+                    t,
+                    repo,
+                    &[
+                        FileState::renamed("src/r3.rs", "src/r4.rs", "q3"),
+                        FileState::deleted("src/r4.rs"),
+                        FileState::renamed("src/r1.rs", "src/r2.rs", "q1"),
+                        FileState::deleted("src/r2.rs"),
+                    ],
+                    at,
+                    &memhouse_core::traits::no_audit,
+                )
+                .await?;
+            let vanished_after = revision(vanished, vec![CodeRef::new("src/r1.rs", "q1"), CodeRef::new("src/r3.rs", "q3")], true).await?;
+            let kept_gone = vanished_after == (vec![("src/r1.rs".to_string(), "q1".to_string(), true, None), ("src/r3.rs".to_string(), "q3".to_string(), true, None)], true);
             let judged = kept_gone && own_after == (vec![("src/s1.rs".to_string(), "s1".to_string(), true, Some("s2".to_string()))], true)
                 // Taken from the predecessor: the renamed file is followed; the one restored
                 // since the reviser read it leaves the revision stale (written about `u2`).

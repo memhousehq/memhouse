@@ -2173,6 +2173,15 @@ governance checks. The schema-10 path backfill now logs, as a warning, how many 
 paths it could not put in canonical form (a path with `..`); [schema.md](schema.md) says
 what that means and how to fix them.
 
+**Review fixes, fifth round (2026-11-27):** the rule for a revision without `code_refs` no
+longer pairs anything. Each reference the reviser read is kept with the hash read for it:
+at its path when the replaced version still has it there, at the new path when exactly one
+live file with that content is its rename, and otherwise at the path it was read at, stale
+with no hash seen. The fourth round paired deleted references with reads by time and
+position, which could give a path another file's hash or keep a reference to a file the
+reviser never read. The recovery query in [schema.md](schema.md) measures the path limit in
+bytes, as the upgrade does.
+
 #### G20 — Memory browser v2 and admin console
 
 - [ ] **Done**

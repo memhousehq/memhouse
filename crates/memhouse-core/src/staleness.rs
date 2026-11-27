@@ -165,14 +165,21 @@ pub fn inherited_refs(predecessor: &[CodeRef]) -> Vec<CodeRef> {
 /// the revision, so no observation of a file can fall between the judgement and the insert.
 ///
 /// - `inherited` (the revision named none of its own; `own` is [`inherited_refs`] as read
-///   then): one reference per reference the predecessor has now, at the path it has now, with
-///   the hash the reviser read. Where the file is known with another content now (changed,
-///   restored or deleted since the reviser read it), the reference starts stale: the revision
-///   was written about content the file no longer has. A file renamed since, with the content
-///   the reviser read, is followed. Where what the reviser read cannot be told (the path
-///   changed and the content with it), the reference keeps the predecessor's hash and starts
-///   stale. A file renamed and then deleted since is kept, stale. A reference to a file that
-///   was already deleted when the reviser read is dropped.
+///   then): one reference per reference the reviser read, each with the hash read for it,
+///   and nothing else. For each:
+///   1. the predecessor still has a reference at that path: fresh if the file is known with
+///      the hash read, stale otherwise (changed, restored or deleted since);
+///   2. it does not, and exactly one of the predecessor's live references at a path the
+///      reviser did not read is known with the hash read, and no other read claims it: the
+///      file was renamed, and the reference follows it;
+///   3. otherwise the file cannot be identified among what the predecessor holds now
+///      (renamed and changed, renamed and deleted, or ambiguous): the reference stays at the
+///      path and with the hash the reviser read, and starts stale with no hash seen.
+///
+///   A reference of the predecessor that no read accounts for is not carried over: the
+///   reviser did not read it (a file deleted before, which [`inherited_refs`] left out), or
+///   it is the file of a read kept under rule 3. So no path gets a hash that was not read
+///   for it, and nothing is paired by position or by time.
 /// - Otherwise the revision's own references. One whose file was seen, on the predecessor,
 ///   with another hash than the revision names (or deleted) starts stale. A hash the
 ///   predecessor never saw is the writer's statement and is taken as fresh.
@@ -191,39 +198,34 @@ pub fn successor_refs(own: &[CodeRef], inherited: bool, predecessor: &[CodeRef],
     }
     // What is known of each file now: the hash last seen, or none for a deleted file.
     let known = |p: &CodeRef| if p.stale_since.is_some() { p.seen_hash.clone() } else { Some(p.blob_hash.clone()) };
-    let stale = |path: &str, hash: &str, p: &CodeRef| {
-        let mut r = CodeRef::new(path, hash);
-        (r.stale_since, r.seen_hash) = (Some(p.stale_since.unwrap_or(at)), known(p));
-        r
-    };
-    // References the reviser read whose path the predecessor no longer has: renamed since.
-    let mut moved: Vec<&CodeRef> = own.iter().filter(|c| !predecessor.iter().any(|p| p.path == c.path)).collect();
-    let mut out: Vec<Option<CodeRef>> = predecessor
-        .iter()
-        .map(|p| {
-            let now = known(p);
-            if let Some(read) = own.iter().find(|c| c.path == p.path) {
-                return Some(if now.as_deref() == Some(read.blob_hash.as_str()) { read.as_written() } else { stale(&p.path, &read.blob_hash, p) });
+    let read_path = |path: &str| own.iter().any(|c| c.path == path);
+    // The live references a read may have been renamed to: at a path the reviser did not
+    // read, known with the hash read.
+    let renames = |read: &CodeRef| predecessor.iter().filter(|p| !read_path(&p.path) && known(p).as_deref() == Some(read.blob_hash.as_str())).collect::<Vec<_>>();
+    own.iter()
+        .map(|read| {
+            if let Some(p) = predecessor.iter().find(|p| p.path == read.path) {
+                if known(p).as_deref() == Some(read.blob_hash.as_str()) {
+                    return read.as_written();
+                }
+                let mut r = read.as_written();
+                (r.stale_since, r.seen_hash) = (Some(p.stale_since.unwrap_or(at)), known(p));
+                return r;
             }
-            // Not among what the reviser read; a deleted one is settled below.
-            let now = now?;
-            Some(match moved.iter().position(|c| c.blob_hash == now) {
-                Some(i) => CodeRef::new(p.path.clone(), moved.remove(i).blob_hash.clone()),
-                None => stale(&p.path, &p.blob_hash, p),
-            })
+            let to = renames(read);
+            // One file, claimed by this read alone (two reads of the same content that both
+            // lost their path cannot be told apart).
+            let alone = own.iter().filter(|c| predecessor.iter().all(|p| p.path != c.path) && c.blob_hash == read.blob_hash).count() == 1;
+            match to.as_slice() {
+                [p] if alone => CodeRef::new(p.path.clone(), read.blob_hash.clone()),
+                _ => {
+                    let mut r = read.as_written();
+                    r.stale_since = Some(at);
+                    r
+                }
+            }
         })
-        .collect();
-    // A deleted file at a path the reviser did not read. Deleted before the reviser read:
-    // not carried over then, and dropped now. Renamed and then deleted since: the reviser
-    // read it under its old path, which is then still unaccounted for, and the revision
-    // keeps the reference, stale, so that it is not recalled as if nothing had happened.
-    // Where both happened, the files deleted last are the ones the reviser still read.
-    let mut gone: Vec<usize> = (0..predecessor.len()).filter(|i| out[*i].is_none() && !own.iter().any(|c| c.path == predecessor[*i].path)).collect();
-    gone.sort_by_key(|i| std::cmp::Reverse(predecessor[*i].stale_since));
-    for i in gone.into_iter().take(moved.len()) {
-        out[i] = Some(stale(&predecessor[i].path, &moved.remove(0).blob_hash, &predecessor[i]));
-    }
-    out.into_iter().flatten().collect()
+        .collect()
 }
 
 /// References as they are after file states are applied to them, in order, for an answer
@@ -773,43 +775,50 @@ mod tests {
     #[test]
     fn a_revision_takes_its_references_from_the_state_it_is_stored_in() {
         let later = at() + chrono::Duration::hours(1);
-        let mut seen = CodeRef::new("a.rs", "h1");
-        (seen.stale_since, seen.seen_hash) = (Some(at()), Some("h2".into()));
-        let mut gone = CodeRef::new("b.rs", "h1");
-        gone.stale_since = Some(at());
-        let predecessor = vec![seen.clone(), gone.clone(), CodeRef::new("c.rs", "h1")];
+        let state = |refs: &[CodeRef]| refs.iter().map(|r| (r.path.clone(), r.blob_hash.clone(), r.stale_since, r.seen_hash.clone())).collect::<Vec<_>>();
+        let row = |path: &str, hash: &str, since: Option<DateTime<Utc>>, seen: Option<&str>| (path.to_string(), hash.to_string(), since, seen.map(str::to_string));
+        let marked = |path: &str, hash: &str, since: DateTime<Utc>, seen: Option<&str>| {
+            let mut r = CodeRef::new(path, hash);
+            (r.stale_since, r.seen_hash) = (Some(since), seen.map(str::to_string));
+            r
+        };
+        let predecessor = vec![marked("a.rs", "h1", at(), Some("h2")), marked("b.rs", "h1", at(), None), CodeRef::new("c.rs", "h1")];
         // What a reviser reads: as last seen, without the deleted file.
         let read = inherited_refs(&predecessor);
         assert_eq!(read, vec![CodeRef::new("a.rs", "h2"), CodeRef::new("c.rs", "h1")]);
         // Stored with nothing seen in between: exactly that, fresh.
         assert_eq!(successor_refs(&read, true, &predecessor, later), read);
-        // Seen in between: `a.rs` restored to `h1`, `c.rs` renamed with the same content, and a
-        // file `d.rs` the reviser read deleted. The revision was written about `a.rs` at
-        // `h2` and about `d.rs`: both start stale. The rename is followed.
-        let mut d_gone = CodeRef::new("d.rs", "h4");
-        d_gone.stale_since = Some(later);
-        let now = vec![CodeRef::new("a.rs", "h1"), gone, d_gone, CodeRef::new("moved/c.rs", "h1")];
+        // Seen in between: `a.rs` restored to `h1`, `c.rs` renamed with the same content, and
+        // a file `d.rs` the reviser read deleted. The revision was written about `a.rs` at
+        // `h2` and about `d.rs`: both start stale. The rename is followed. `b.rs`, deleted
+        // before the reviser read, is not carried over.
+        let now = vec![CodeRef::new("a.rs", "h1"), marked("b.rs", "h1", at(), None), marked("d.rs", "h4", later, None), CodeRef::new("moved/c.rs", "h1")];
         let read = vec![CodeRef::new("a.rs", "h2"), CodeRef::new("c.rs", "h1"), CodeRef::new("d.rs", "h4")];
-        let stored = successor_refs(&read, true, &now, later);
-        let state: Vec<_> = stored.iter().map(|r| (r.path.as_str(), r.blob_hash.as_str(), r.stale_since, r.seen_hash.as_deref())).collect();
-        assert_eq!(state, vec![("a.rs", "h2", Some(later), Some("h1")), ("d.rs", "h4", Some(later), None), ("moved/c.rs", "h1", None, None)]);
-        // Renamed and changed in between: what the reviser read of it cannot be told, so the
-        // reference keeps the predecessor's hash and starts stale.
-        let mut moved = CodeRef::new("new/c.rs", "h1");
-        (moved.stale_since, moved.seen_hash) = (Some(later), Some("h9".into()));
-        let unknown = successor_refs(&[CodeRef::new("c.rs", "h1")], true, &[moved], later);
-        assert_eq!((unknown[0].path.as_str(), unknown[0].blob_hash.as_str(), unknown[0].stale_since, unknown[0].seen_hash.as_deref()), ("new/c.rs", "h1", Some(later), Some("h9")));
-        // Renamed and then deleted in between: the reviser read it as `c.rs`, so the reference
-        // is kept, stale, at the path it was deleted under. One that was deleted before the
-        // reviser read (`b.rs`, not among what was read) is still dropped.
-        let mut renamed_gone = CodeRef::new("moved/c.rs", "h1");
-        renamed_gone.stale_since = Some(later);
-        let mut b_gone = CodeRef::new("b.rs", "h1");
-        b_gone.stale_since = Some(at());
-        let kept = successor_refs(&[CodeRef::new("c.rs", "h1")], true, &[b_gone.clone(), renamed_gone], later);
-        assert_eq!(kept.len(), 1, "{kept:?}");
-        assert_eq!((kept[0].path.as_str(), kept[0].blob_hash.as_str(), kept[0].stale_since, kept[0].seen_hash.as_deref()), ("moved/c.rs", "h1", Some(later), None));
-        assert!(successor_refs(&[], true, &[b_gone], later).is_empty());
+        assert_eq!(
+            state(&successor_refs(&read, true, &now, later)),
+            vec![row("a.rs", "h2", Some(later), Some("h1")), row("moved/c.rs", "h1", None, None), row("d.rs", "h4", Some(later), None)]
+        );
+        // Two files each renamed and then deleted: nothing says which is which, and nothing
+        // needs to. Each reference stays at the path and with the hash read for it, stale.
+        let both_gone = vec![marked("y.rs", "B", later, None), marked("z.rs", "A", later, None)];
+        let two = successor_refs(&[CodeRef::new("a.rs", "A"), CodeRef::new("b.rs", "B")], true, &both_gone, later);
+        assert_eq!(state(&two), vec![row("a.rs", "A", Some(later), None), row("b.rs", "B", Some(later), None)]);
+        // Renamed and changed, with another file deleted before the reviser read: the read
+        // is kept where it was read, stale, and no reference appears for the deleted file.
+        let changed = vec![marked("b.rs", "h1", at(), None), marked("moved/c.rs", "C", later, Some("D"))];
+        assert_eq!(state(&successor_refs(&[CodeRef::new("c.rs", "C")], true, &changed, later)), vec![row("c.rs", "C", Some(later), None)]);
+        // A file that was stale before another was deleted (so its mark is the older one),
+        // read by the reviser, then renamed and deleted: its reference is the one kept, and
+        // the file deleted before the reviser read stays dropped.
+        let older = at() - chrono::Duration::hours(5);
+        let ordering = vec![marked("b.rs", "h1", at(), None), marked("c.rs", "A0", older, None)];
+        assert_eq!(state(&successor_refs(&[CodeRef::new("a.rs", "A1")], true, &ordering, later)), vec![row("a.rs", "A1", Some(later), None)]);
+        // Two reads of the same content that both lost their path, and one file with that
+        // content: not told apart, so neither is followed.
+        let same = successor_refs(&[CodeRef::new("p.rs", "S"), CodeRef::new("q.rs", "S")], true, &[CodeRef::new("r.rs", "S")], later);
+        assert_eq!(state(&same), vec![row("p.rs", "S", Some(later), None), row("q.rs", "S", Some(later), None)]);
+        // Nothing read: nothing carried over.
+        assert!(successor_refs(&[], true, &[marked("b.rs", "h1", at(), None)], later).is_empty());
         // Its own: the hash last seen is fresh, another one is stale as the predecessor was,
         // and a path or a hash the predecessor never saw is the writer's statement.
         let own = successor_refs(&[CodeRef::new("a.rs", "h2"), CodeRef::new("new.rs", "n1")], false, &predecessor, later);

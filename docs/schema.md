@@ -20,13 +20,34 @@ On Postgres a trigger on `mh_code_ref` keeps new rows in that form too, so a ver
 process still running during a rolling upgrade cannot store another spelling; a Lite file is
 opened by one build at a time, and an older build refuses a newer file.
 
-A stored path that has no such form is left as it is: one that leaves the repository
-(`../x`, `src/../a.rs`), or one over the length limit. Such a reference **matches no file
-report**, so its memory never goes stale. The upgrade logs a warning with their number (not
-the paths). To find them: `SELECT memory_id, path FROM mh_code_ref WHERE path = '..' OR path
-LIKE '../%' OR path LIKE '%/../%' OR path LIKE '%/..' OR length(path) > 1024` (with `\` for
-`/` as well, on rows a Windows client wrote). To fix one, revise the memory with `code_refs`
-that name the file by its path from the repository root.
+A stored path that has no such form is left as it is. With `\` read as `/`, that is a path
+with a `..` segment (`../x`, `src/../a.rs`), a path with nothing but empty and `.` segments
+(the empty path, `.`, `./`, `/`), and a path whose canonical form is over 1,024 bytes (UTF-8).
+A leading `/` alone is no such case: `/src/a.rs` becomes `src/a.rs`. Such a reference
+**matches no file report**, so its memory never goes stale. The upgrade logs a warning with
+their number (not the paths). To find them on Postgres:
+
+```sql
+SELECT memory_id, path FROM mh_code_ref, LATERAL (SELECT replace(path, chr(92), '/') AS p) n
+WHERE p = '..' OR p LIKE '../%' OR p LIKE '%/../%' OR p LIKE '%/..'   -- a `..` segment
+   OR p ~ '^(\.?/)*\.?$'                                              -- nothing but '' and '.'
+   OR octet_length(path) > 1024;                                       -- too long
+```
+
+In a Lite file, which has no regular expressions:
+
+```sql
+SELECT memory_id, path FROM (SELECT memory_id, path, replace(path, char(92), '/') AS p FROM mh_code_ref)
+WHERE p = '..' OR p LIKE '../%' OR p LIKE '%/../%' OR p LIKE '%/..'
+   OR trim(p, './') = ''
+   OR length(CAST(path AS BLOB)) > 1024;
+```
+
+Both return every path the upgrade counted, and may return a few it did not: the length test
+is on the stored path, which can be longer than its canonical form (the one the upgrade
+measures), and the Lite query's `trim` test also returns a path made of dots and slashes
+only that has a segment of three or more dots (a valid name). To fix a reference, revise the
+memory with `code_refs` that name the file by its path from the repository root.
 
 ## Entities
 
