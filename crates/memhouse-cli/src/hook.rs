@@ -289,19 +289,61 @@ pub fn gemini_entries(opened: &str, edited: &str) -> Vec<(&'static str, Value)> 
     vec![("AfterTool", entry("read_file", "memhouse-file-opened", opened)), ("AfterTool", entry("write_file|replace", "memhouse-file-edited", edited))]
 }
 
-/// Whether a command line is one of MemHouse's file hooks: its program is a binary called
-/// `memhouse` (whatever directory it is in, quoted or not) and it runs `hook file-opened` or
-/// `hook file-edited`. Another program's command with the same words (`mytool hook
-/// file-opened`) is not.
+/// The words of a command line that is one plain command: no pipe, list, redirection,
+/// substitution or expansion outside quotes. `None` for anything else, so that a command
+/// with a part of the user's (`memhouse hook file-opened ... && ./lint.sh`) is never read as
+/// only ours. Quoting as [`quote`] writes it and as a hand-written line may have it.
+fn plain_words(command: &str) -> Option<Vec<String>> {
+    let mut words: Vec<String> = vec![];
+    let mut word: Option<String> = None;
+    let mut chars = command.trim().chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            ' ' | '\t' => words.extend(word.take()),
+            '\'' => {
+                let w = word.get_or_insert_with(String::new);
+                loop {
+                    match chars.next()? {
+                        '\'' => break,
+                        c => w.push(c),
+                    }
+                }
+            }
+            '"' => {
+                let w = word.get_or_insert_with(String::new);
+                loop {
+                    match chars.next()? {
+                        '"' => break,
+                        '$' | '`' | '\\' => return None,
+                        c => w.push(c),
+                    }
+                }
+            }
+            // An escaped quote, as `quote` writes one; any other backslash is a path's.
+            '\\' if chars.peek() == Some(&'\'') => word.get_or_insert_with(String::new).push(chars.next()?),
+            '&' | '|' | ';' | '<' | '>' | '(' | ')' | '$' | '`' | '\n' | '\r' | '#' | '*' | '?' | '~' | '{' | '}' | '!' => return None,
+            c => word.get_or_insert_with(String::new).push(c),
+        }
+    }
+    words.extend(word);
+    Some(words)
+}
+
+/// Whether a command line is one of MemHouse's file hooks and nothing else: one plain command
+/// ([`plain_words`]) whose program is a binary called `memhouse` (whatever directory it is
+/// in), with `--config <file>` or not, running `hook file-opened` or `hook file-edited` with
+/// options only. Another program's command with the same words (`mytool hook file-opened`)
+/// is not, and neither is ours with anything of the user's attached to it.
 fn our_command(command: &str) -> bool {
-    let c = command.trim_start();
-    let program = match c.chars().next() {
-        Some(q @ ('\'' | '"')) => c[1..].split(q).next().unwrap_or_default(),
-        _ => c.split_whitespace().next().unwrap_or_default(),
-    };
+    let Some(words) = plain_words(command) else { return false };
+    let Some((program, rest)) = words.split_first() else { return false };
     let name = program.rsplit(['/', '\\']).next().unwrap_or_default();
-    let rest = &c[program.len().min(c.len())..];
-    matches!(name, "memhouse" | "memhouse.exe") && (rest.contains(" hook file-opened") || rest.contains(" hook file-edited"))
+    let rest = match rest {
+        [flag, _, rest @ ..] if flag == "--config" => rest,
+        rest => rest,
+    };
+    matches!(name, "memhouse" | "memhouse.exe")
+        && matches!(rest, [hook, which, options @ ..] if hook == "hook" && matches!(which.as_str(), "file-opened" | "file-edited") && options.first().is_none_or(|o| o.starts_with("--")))
 }
 
 /// Whether a hook group of a settings file is one this command wrote: every handler in it is
@@ -435,6 +477,24 @@ mod tests {
         root["hooks"]["PostToolUse"].as_array_mut().unwrap().push(json!({"matcher": "Read", "hooks": [{"type": "command", "command": "mytool hook file-opened --all"}]}));
         assert!(our_command("'/opt/my tools/memhouse' --config /c hook file-opened --key-file /k") && our_command("C:\\bin\\memhouse.exe hook file-edited"));
         assert!(!our_command("mytool hook file-opened") && !our_command("/bin/memhouse-wrapper hook file-opened") && !our_command("/bin/memhouse mcp"));
+        // Ours with a command of the user's attached is the user's: never replaced.
+        for theirs in [
+            "memhouse hook file-opened --key-file /k && ./lint.sh",
+            "memhouse hook file-opened --key-file /k; ./lint.sh",
+            "memhouse hook file-edited | tee /tmp/log",
+            "memhouse hook file-edited $(./extra.sh)",
+            "memhouse hook file-opened ./lint.sh",
+            "memhouse hook file-opened 'unterminated",
+        ] {
+            assert!(!our_command(theirs), "{theirs}");
+        }
+        // A quoted program with letters outside ASCII, ours or not, is read without a panic.
+        assert!(!our_command("'/opt/校验' --check") && our_command("'/opt/工具/memhouse' hook file-opened --key-file '/k y/it'\\''s'"));
+        let mut chained =
+            json!({"hooks": {"PostToolUse": [{"matcher": "Read", "hooks": [{"type": "command", "command": "memhouse hook file-opened --key-file /k && ./lint.sh"}]}]}});
+        merge_hooks(&mut chained, &claude_code_entries("memhouse hook file-opened", "memhouse hook file-edited")).unwrap();
+        let commands: Vec<&str> = chained["hooks"]["PostToolUse"].as_array().unwrap().iter().map(|g| g["hooks"][0]["command"].as_str().unwrap()).collect();
+        assert!(commands.contains(&"memhouse hook file-opened --key-file /k && ./lint.sh") && commands.len() == 3, "{commands:?}");
         let entries = claude_code_entries("/bin/memhouse hook file-opened --format claude-code --key-file /k", "/bin/memhouse hook file-edited --format claude-code --key-file /k");
         merge_hooks(&mut root, &entries).unwrap();
         let again = root.clone();

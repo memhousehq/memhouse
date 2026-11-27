@@ -180,6 +180,7 @@ async fn queued_proposal_survives_a_restart() {
             focus: None,
             structured: None,
             code_refs: vec![],
+            refs_inherited: false,
         }],
         session_id: None,
         enqueued_at: Utc::now(),

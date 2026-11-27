@@ -296,8 +296,26 @@ impl Store for SqliteStore {
                 }
                 return Ok(false);
             }
-            let lines = lines_of(&w.records);
-            self.write_rows(&tx, &write_rows_of(&lines, &w.records), false)?;
+            // A revision's references are judged against its predecessor's as they are now,
+            // not as they were when the revision was made (TPL-04): read in this transaction,
+            // which holds the write lock, so no observation falls in between.
+            let mut records = std::borrow::Cow::Borrowed(&w.records);
+            for i in 0..w.records.len() {
+                let n = &w.records[i];
+                let Some(old) = n.memory.supersedes.filter(|_| n.refs_inherited || !n.code_refs.is_empty()) else { continue };
+                let predecessor = rows(
+                    &tx,
+                    &format!("SELECT {CODE_REF_COLS} FROM mh_code_ref c JOIN mh_memory m ON m.id = c.memory_id WHERE m.tenant = ?1 AND c.memory_id = ?2 ORDER BY c.path"),
+                    params![w.tenant, old.to_string()],
+                    code_ref_of,
+                )?;
+                let now = memhouse_core::staleness::successor_refs(&n.code_refs, n.refs_inherited, &predecessor);
+                if now != n.code_refs {
+                    records.to_mut()[i].code_refs = now;
+                }
+            }
+            let lines = lines_of(&records);
+            self.write_rows(&tx, &write_rows_of(&lines, &records), false)?;
         }
         if !w.requires.is_empty() {
             // The sources of a promotion: one already gone stops the insert.
@@ -435,8 +453,22 @@ impl Store for SqliteStore {
              WHERE tenant = ?1 AND subject = ?2 AND status = 'candidate' AND embedding IS NOT NULL \
              AND json_extract(metadata, '$.held') = ?3 AND (expires_at IS NULL OR expires_at > ?4) \
              AND (?5 IS NULL OR kind = ?5) \
-             AND scope_org IS ?6 AND scope_team IS ?7 AND scope_agent IS ?8 AND scope_user IS ?9 AND scope_session IS ?10",
-            params![tenant, subject, which.reason, now(), which.kind.map(|k| k.as_str()), scope.org, scope.team, scope.agent, scope.user, scope.session],
+             AND scope_org IS ?6 AND scope_team IS ?7 AND scope_agent IS ?8 AND scope_user IS ?9 AND scope_session IS ?10 \
+             AND (NOT ?11 OR json_extract(metadata, '$.counted') IS ?12)",
+            params![
+                tenant,
+                subject,
+                which.reason,
+                now(),
+                which.kind.map(|k| k.as_str()),
+                scope.org,
+                scope.team,
+                scope.agent,
+                scope.user,
+                scope.session,
+                which.counted.is_some(),
+                which.counted.flatten()
+            ],
             embedding,
             limit,
         )
@@ -1528,7 +1560,13 @@ impl Store for SqliteStore {
         let stored = rows(&tx, &sql, [tenant, ids.as_str()], code_ref_of)?;
         let written = memhouse_core::staleness::revalidated(&stored, refs)?;
         for code in &written {
-            exec(&tx, "UPDATE mh_code_ref SET blob_hash = ?3, stale_since = NULL, seen_hash = NULL WHERE memory_id = ?1 AND path = ?2", params![ids, code.path, code.blob_hash])?;
+            // Not stale, except where the file was seen with another hash than the one
+            // confirmed (`staleness::revalidated`).
+            exec(
+                &tx,
+                "UPDATE mh_code_ref SET blob_hash = ?3, stale_since = ?4, seen_hash = ?5 WHERE memory_id = ?1 AND path = ?2",
+                params![ids, code.path, code.blob_hash, code.stale_since.map(us), code.seen_hash],
+            )?;
         }
         restale(&tx, tenant, id)?;
         let after = rows(&tx, &sql, [tenant, ids.as_str()], code_ref_of)?;

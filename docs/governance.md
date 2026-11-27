@@ -317,6 +317,7 @@ appended to `mh_audit`. Recalls are added when `audit_reads = true`.
 | `memory.stale` | file-touched recall, files changed (a file was seen with other content, or deleted) | `files` (path, `moved_from`), `stale`, `why` (the event: `file.opened`, `file.edited`, `files.changed`, and the caller's `reason`) |
 | `memory.fresh` | the same routes (a file was seen with its stored content again) | as above; `stale` says whether another reference of the memory is still stale |
 | `memory.code_moved` | the same routes (a file was renamed, content unchanged) | `files` (new path, `moved_from`) |
+| `memory.code_seen` | the same routes (a file whose reference is stale already was seen with yet another hash, or deleted: no change of state, but the hash a revalidation without `code_refs` takes) | `files` (path, `seen_hash`) |
 | `memory.revalidate` | revalidate | per reference: `path`, `from` and `to` hash, `was_stale`; `stale` after it |
 | `memory.signal` | the write gate (actor `engine`): an inferred preference or a correction was seen again | `signals`, `seen_in`, `reason`; for a correction also `corrections` and `threshold` |
 | `memory.admit` | the write gate or a reviewer: a candidate was committed | who and why; for a procedure promoted by repeated correction: `reason` (`repeated_correction: …`), `corrections`, `threshold` |

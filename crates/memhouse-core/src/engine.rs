@@ -136,6 +136,12 @@ fn truncate_chars(s: &str, n: usize) -> &str {
     }
 }
 
+/// How much further than the first search the refill of a task-matched recall looks, when
+/// procedures that do not match the task were dropped: this many times its limit, and this
+/// many more. A bound, so that a recall is at most one search longer.
+const TASK_REFILL_FACTOR: usize = 4;
+const TASK_REFILL_MORE: usize = 16;
+
 impl Engine {
     pub fn new(store: Arc<dyn Store>, embedder: Arc<dyn Embedder>, reranker: Option<Arc<dyn Reranker>>, cfg: Config) -> Engine {
         let authorizer = Arc::new(crate::access::ScopeAuthorizer::new(&cfg));
@@ -445,7 +451,7 @@ impl Engine {
         if let Some(done) = self.replay::<RememberResult>(&tenant, &req.request_key, &req).await? {
             return Ok(done);
         }
-        let result = self.remember_once(&req, &tenant, &subject, &actor, (entry, Op::Remember), policy).await?;
+        let result = self.remember_once(&req, &tenant, &subject, &actor, (entry, Op::Remember, false), policy).await?;
         self.accepted_key(&tenant, &subject, "remember", &req.request_key, &req, &result).await;
         Ok(result)
     }
@@ -459,10 +465,11 @@ impl Engine {
         tenant: &str,
         subject: &str,
         actor: &str,
-        how: (Entry, Op),
+        how: (Entry, Op, bool),
         policy: &CompiledPolicy,
     ) -> anyhow::Result<RememberResult> {
-        let (entry, op) = how;
+        // The last: a revision that takes the references of the version it replaces.
+        let (entry, op, refs_inherited) = how;
         let (tenant, subject, actor) = (tenant.to_string(), subject.to_string(), actor.to_string());
         let kind = req.kind.unwrap_or(MemoryKind::Semantic);
         if !policy.allows(kind) {
@@ -602,7 +609,7 @@ impl Engine {
             source,
             op,
             entry,
-            records: vec![PendingRecord { memory: mem, content_hash: hash, redactions: redactions.clone(), focus: None, structured, code_refs }],
+            records: vec![PendingRecord { memory: mem, content_hash: hash, redactions: redactions.clone(), focus: None, structured, code_refs, refs_inherited }],
             session_id: None,
             enqueued_at: now,
         };
@@ -748,6 +755,7 @@ impl Engine {
                 focus,
                 structured: None,
                 code_refs: vec![],
+                refs_inherited: false,
             });
         }
         if records.is_empty() {
@@ -1145,18 +1153,17 @@ impl Engine {
                 keep
             });
             reserve.retain(|h| !procedure(h) || on_task(&h.memory));
-            // The places the procedures took are filled from the memories ranked below them:
-            // the same search without procedural memory, so a procedure that does not match
-            // never costs the caller a memory that does (k = 1 would otherwise return nothing).
-            let other_kinds: Vec<MemoryKind> = req.kinds.clone().unwrap_or_else(|| MemoryKind::ALL.to_vec()).into_iter().filter(|k| *k != MemoryKind::Procedural).collect();
-            if hits.len() < fetched && !other_kinds.is_empty() && !working_only {
+            // The places the procedures took are filled from what is ranked below them: the
+            // same search, further down, with the procedures in it held to the same test. So
+            // a procedure that does not match never costs the caller a memory that does, or
+            // a procedure that does (k = 1 would otherwise return nothing).
+            if hits.len() < fetched && !working_only {
                 let mut refill = q.clone();
-                refill.kinds = Some(other_kinds);
-                refill.limit = fused_limit;
+                refill.limit = fused_limit * TASK_REFILL_FACTOR + TASK_REFILL_MORE;
                 let mut more = within(deadline, self.store.search(&refill).instrument(tracing::info_span!("recall.task_refill"))).await?;
                 statements += 1;
-                let have: std::collections::HashSet<Uuid> = hits.iter().chain(&reserve).map(|h| h.memory.id).collect();
-                more.retain(|h| !have.contains(&h.memory.id));
+                let have: std::collections::HashSet<Uuid> = hits.iter().chain(&reserve).map(|h| h.memory.id).chain(off_task.iter().map(|x| x.id)).collect();
+                more.retain(|h| !have.contains(&h.memory.id) && (!procedure(h) || on_task(&h.memory)));
                 more.truncate(fetched - hits.len());
                 crate::pack::score(&mut more, rank, req.as_of.unwrap_or(present), present);
                 hits.extend(more);
@@ -1368,6 +1375,9 @@ impl Engine {
         if old.status != MemoryStatus::Committed {
             return Err(error::conflict(format!("memory {} is {}; only the current, committed version can be revised", req.id, old.status.as_str())));
         }
+        // References it does not name are the predecessor's, taken again by the store when it
+        // inserts the revision (TPL-04).
+        let mut refs_inherited = false;
         let (structured, code_refs) = if req.structured.is_some() && req.code_refs.is_some() {
             (req.structured.clone(), req.code_refs.clone().unwrap_or_default())
         } else {
@@ -1375,15 +1385,10 @@ impl Engine {
             // A revision ends the staleness of the version it replaces (TPL-04). References it
             // inherits take the content their file was last seen with, which is what the
             // reviser had before them; one to a file that was deleted is not carried over.
-            let inherited = || {
-                c.iter()
-                    .filter_map(|r| match (&r.stale_since, &r.seen_hash) {
-                        (None, _) => Some(r.as_written()),
-                        (Some(_), Some(h)) => Some(CodeRef::new(r.path.clone(), h.clone())),
-                        (Some(_), None) => None,
-                    })
-                    .collect()
-            };
+            // Read here for the answer and the gate; the store reads them again when it
+            // inserts the revision, so a file seen in between is not missed.
+            let inherited = || crate::staleness::successor_refs(&[], true, &c);
+            refs_inherited = req.code_refs.is_none() && !c.is_empty();
             (req.structured.clone().or(s), req.code_refs.clone().unwrap_or_else(inherited))
         };
         // New content that is itself a structured record replaces the old structured form.
@@ -1412,7 +1417,7 @@ impl Engine {
             code_refs,
             wait: req.wait,
         };
-        let result = self.remember_once(&write, &tenant, &old.subject, &actor, (entry, Op::Revise), policy).await?;
+        let result = self.remember_once(&write, &tenant, &old.subject, &actor, (entry, Op::Revise, refs_inherited), policy).await?;
         self.accepted_key(&tenant, &old.subject, "revise", &req.request_key, &req, &result).await;
         Ok(result)
     }

@@ -137,7 +137,7 @@ impl Engine {
             code_refs: vec![],
             wait: req.wait,
         };
-        let result = self.remember_once(&write, &tenant, &subject, &actor, (entry, Op::Promote), policy).await?;
+        let result = self.remember_once(&write, &tenant, &subject, &actor, (entry, Op::Promote, false), policy).await?;
         self.accepted_key(&tenant, &subject, "promote", &req.request_key, &req, &result).await;
         Ok(result)
     }

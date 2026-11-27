@@ -99,7 +99,15 @@ fn proposal(subject: &str, content: &str, at: DateTime<Utc>) -> Proposal {
         source: "conformance".into(),
         op: Op::Remember,
         entry: Entry::Commit,
-        records: vec![PendingRecord { content_hash: l.content_hash, memory, redactions: vec!["email".into()], focus: None, structured: None, code_refs: vec![] }],
+        records: vec![PendingRecord {
+            content_hash: l.content_hash,
+            memory,
+            redactions: vec!["email".into()],
+            focus: None,
+            structured: None,
+            code_refs: vec![],
+            refs_inherited: false,
+        }],
         session_id: Some("s-queue".into()),
         enqueued_at: at,
     }

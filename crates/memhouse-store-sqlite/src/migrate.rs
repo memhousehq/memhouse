@@ -43,6 +43,18 @@ fn add_staleness(c: &Connection) -> anyhow::Result<()> {
             exec(c, &format!("ALTER TABLE {table} ADD COLUMN {column} {ty}"), [])?;
         }
     }
+    // From this version a reference is matched by its path in one form (TPL-04): rows written
+    // before, with the path as the writer spelled it (`./src//a.rs`), are put in it. Where a
+    // memory then has two rows for one path, the one already in that form is kept.
+    let stored: Vec<(String, String)> =
+        c.prepare("SELECT memory_id, path FROM mh_code_ref ORDER BY memory_id, path")?.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<Result<_, _>>()?;
+    let stored: Vec<(uuid::Uuid, String)> = stored.into_iter().map(|(id, path)| Ok((id.parse()?, path))).collect::<anyhow::Result<_>>()?;
+    for (id, from, to) in memhouse_core::staleness::canonical_paths(&stored) {
+        match to {
+            Some(to) => exec(c, "UPDATE mh_code_ref SET path = ?3 WHERE memory_id = ?1 AND path = ?2", rusqlite::params![id.to_string(), from, to])?,
+            None => exec(c, "DELETE FROM mh_code_ref WHERE memory_id = ?1 AND path = ?2", rusqlite::params![id.to_string(), from])?,
+        };
+    }
     Ok(())
 }
 
@@ -178,9 +190,31 @@ mod tests {
         }
         make_version_8(&path);
         assert_eq!(version_of(&path), "8");
+        // References as a version 8 process stored them: the path as the writer spelled it.
+        {
+            let old = Connection::open(&path).unwrap();
+            for (id, p, h) in [(a.memory.id, "./src//a.rs", "h1"), (b.memory.id, "src\\b.rs", "h1"), (b.memory.id, "src/b.rs", "h2"), (b.memory.id, "../outside", "h1")] {
+                old.execute(
+                    "INSERT INTO mh_code_ref (memory_id, tenant, subject, path, blob_hash) VALUES (?1, 'acme', 'user:ada', ?2, ?3)",
+                    rusqlite::params![id.to_string(), p, h],
+                )
+                .unwrap();
+            }
+        }
 
         let store = SqliteStore::open(&path, "").unwrap();
         store.migrate(4, EMBEDDER).await.unwrap();
+        // The upgrade put them in the form observations are matched in: one row per file, the
+        // one already in that form kept, a path that has none left alone.
+        let paths = |id: uuid::Uuid| -> Vec<(String, String)> {
+            let c = store.conn();
+            let mut q = c.prepare("SELECT path, blob_hash FROM mh_code_ref WHERE memory_id = ?1 ORDER BY path").unwrap();
+            q.query_map([id.to_string()], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().collect::<Result<_, _>>().unwrap()
+        };
+        assert_eq!(paths(a.memory.id), vec![("src/a.rs".to_string(), "h1".to_string())]);
+        assert_eq!(paths(b.memory.id), vec![("../outside".to_string(), "h1".to_string()), ("src/b.rs".to_string(), "h2".to_string())]);
+        let seen = store.code_refs_observe("acme", "user:ada", &[FileState::present("src/a.rs", "h9")], Utc::now(), &memhouse_core::traits::no_audit).await.unwrap();
+        assert!(seen.len() == 1 && seen[0].flagged && seen[0].id == a.memory.id, "a reference stored as ./src//a.rs follows its file: {seen:?}");
 
         // The copy is the file as it was: version 8, no `language` column, both records.
         let copies = snapshots(dir.path());

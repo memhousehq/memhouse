@@ -97,6 +97,9 @@ pub struct PendingRecord {
     pub structured: Option<Structured>,
     #[serde(default)]
     pub code_refs: Vec<CodeRef>,
+    /// See [`NewMemory::refs_inherited`].
+    #[serde(default)]
+    pub refs_inherited: bool,
 }
 
 impl Proposal {
@@ -593,6 +596,7 @@ impl Engine {
             let mut rec = NewMemory::new(m, r.content_hash.clone());
             rec.structured = r.structured.clone();
             rec.code_refs = r.code_refs.clone();
+            rec.refs_inherited = r.refs_inherited;
             // The erasure guarantee of a promotion holds on this path too.
             self.without_erased_sources(&p.tenant, &mut rec).await?;
             records.push(rec);
@@ -639,6 +643,7 @@ impl Engine {
                 let mut rec = NewMemory::new(m, r.content_hash.clone());
                 rec.structured = r.structured.clone();
                 rec.code_refs = r.code_refs.clone();
+                rec.refs_inherited = r.refs_inherited;
                 Item::new(rec, r.focus.clone(), r.redactions.clone())
             })
             .collect();
@@ -843,6 +848,19 @@ impl Engine {
             } else if unsourced {
                 it.note = Some(format!("rejected: {} memory needs a verified source (the writing principal and a source label)", m.kind.as_str()));
                 MemoryStatus::Rejected
+            } else if correction {
+                // Before the signal branch: a proposal that is both is counted as a
+                // correction, or its repeats would only ever wait for a reviewer.
+                // Counted like a signal, on one record; no expiry, since a reviewer may still
+                // confirm it at any time.
+                m.metadata["held"] = json!("signal");
+                m.metadata["signals"] = json!(1);
+                m.metadata["counted"] = json!("correction");
+                it.note = Some(format!(
+                    "held as a candidate: a correction becomes a procedure once it has been given {} times, or when a reviewer confirms it",
+                    correction_threshold(&self.cfg.intake)
+                ));
+                MemoryStatus::Candidate
             } else if signal {
                 if m.expires_at.is_none() {
                     m.expires_at = Some(m.created_at + chrono::Duration::days(self.cfg.intake.plan_ttl_days.max(1) as i64));
@@ -861,17 +879,6 @@ impl Engine {
                         self.cfg.intake.preference_signals
                     ));
                 }
-                MemoryStatus::Candidate
-            } else if correction {
-                // Counted like a signal, on one record; no expiry, since a reviewer may still
-                // confirm it at any time.
-                m.metadata["held"] = json!("signal");
-                m.metadata["signals"] = json!(1);
-                m.metadata["counted"] = json!("correction");
-                it.note = Some(format!(
-                    "held as a candidate: a correction becomes a procedure once it has been given {} times, or when a reviewer confirms it",
-                    correction_threshold(&self.cfg.intake)
-                ));
                 MemoryStatus::Candidate
             } else if reviewed {
                 it.note = Some("waiting for a reviewer".into());
@@ -984,16 +991,10 @@ impl Engine {
                         Some(o) if o.status == MemoryStatus::Committed => {
                             supersede.push((old, m.id));
                             it.superseded = Some(old);
-                            // TPL-04: the successor's references were read when the revision
-                            // was made. A file seen since with other content than the
-                            // successor says it is about leaves the successor stale too: read
-                            // here, where the revision takes effect, not only when it began.
-                            let seen = self.store.representations(tenant, old).await?.1;
-                            for r in it.rec.code_refs.iter_mut() {
-                                if let Some(was) = seen.iter().find(|o| o.path == r.path && o.stale_since.is_some() && o.seen_hash.as_deref() != Some(r.blob_hash.as_str())) {
-                                    (r.stale_since, r.seen_hash) = (was.stale_since, was.seen_hash.clone());
-                                }
-                            }
+                            // TPL-04: the successor's references are judged against what
+                            // was seen of the files since the revision was made by the
+                            // store, in the transaction that inserts it
+                            // (`staleness::successor_refs`).
                         }
                         _ => {
                             m.status = MemoryStatus::Rejected;
@@ -1005,7 +1006,14 @@ impl Engine {
                 // The same signal again, in the same scope: the held one counts it; at the
                 // threshold it is committed. The repeat itself is not stored twice.
                 if let Some(emb) = it.rec.embedding.clone() {
-                    for (held, sim) in self.store.nearest_held(tenant, subject, &emb, 3, &Held { reason: "signal", kind: Some(m.kind), scope: &m.scope }).await? {
+                    // A correction repeats a correction, a signal a signal: asked of the
+                    // store, so that nearer records of the other sort do not use up the limit.
+                    let counted = m.metadata.get("counted").and_then(|c| c.as_str()).map(str::to_string);
+                    for (held, sim) in self
+                        .store
+                        .nearest_held(tenant, subject, &emb, 3, &Held { reason: "signal", kind: Some(m.kind), scope: &m.scope, counted: Some(counted.as_deref()) })
+                        .await?
+                    {
                         let Some(h) = self.store.get(tenant, held).await? else { continue };
                         // The same preference: same scope and kind, and the same key if keyed
                         // (two keys with similar wording are two preferences).
@@ -1124,7 +1132,7 @@ impl Engine {
                     if class == Some(Statement::Event) && m.status == MemoryStatus::Committed {
                         // Held plans only (a guess is not "done" by a similar event), unexpired, in
                         // the event's own scope.
-                        for (plan, sim) in self.store.nearest_held(tenant, subject, &emb, 3, &Held { reason: "plan", kind: None, scope: &m.scope }).await? {
+                        for (plan, sim) in self.store.nearest_held(tenant, subject, &emb, 3, &Held { reason: "plan", kind: None, scope: &m.scope, counted: None }).await? {
                             let Some(pm) = self.store.get(tenant, plan).await? else { continue };
                             let open = pm.expires_at.is_none_or(|t| t > Utc::now()) && pm.scope == m.scope;
                             if open

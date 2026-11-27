@@ -258,8 +258,15 @@ async fn a_restore_does_not_write_again_a_queued_record_that_retention_purged() 
     let dir = home.path().join("backup");
     let store = open(&db).await;
     let (purged, kept) = (record("user:ada", "Ada's one-time code"), record("user:ada", "Ada likes tea"));
-    let pending =
-        |n: &NewMemory| PendingRecord { content_hash: n.content_hash.clone(), memory: n.memory.clone(), redactions: vec![], focus: None, structured: None, code_refs: vec![] };
+    let pending = |n: &NewMemory| PendingRecord {
+        content_hash: n.content_hash.clone(),
+        memory: n.memory.clone(),
+        redactions: vec![],
+        focus: None,
+        structured: None,
+        code_refs: vec![],
+        refs_inherited: false,
+    };
     let proposal = Proposal {
         id: Uuid::now_v7(),
         tenant: T.into(),
@@ -306,8 +313,15 @@ async fn a_restore_removes_a_record_deleted_while_queued_and_one_dated_after_its
     dated_ahead.memory.created_at = Utc::now() + Duration::days(1);
     store.insert(std::slice::from_ref(&dated_ahead)).await.unwrap();
     let (forgotten, kept) = (record("user:ada", "Ada's PIN, forgotten before it was written"), record("user:ada", "Ada likes tea"));
-    let pending =
-        |n: &NewMemory| PendingRecord { content_hash: n.content_hash.clone(), memory: n.memory.clone(), redactions: vec![], focus: None, structured: None, code_refs: vec![] };
+    let pending = |n: &NewMemory| PendingRecord {
+        content_hash: n.content_hash.clone(),
+        memory: n.memory.clone(),
+        redactions: vec![],
+        focus: None,
+        structured: None,
+        code_refs: vec![],
+        refs_inherited: false,
+    };
     let proposal = Proposal {
         id: Uuid::now_v7(),
         tenant: T.into(),

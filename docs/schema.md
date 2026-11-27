@@ -13,7 +13,9 @@ the grants between agents and version 8 the evaluation suites and their runs; no
 memory, so none is exported. Version 7 also added the
 `taxonomic` kind and made a record's scope part of its deduplication key. Version 9 added the
 record's `language`. Version 10 added the staleness of code references (`stale_since` and
-`seen_hash` on a reference, `stale_since` on its record).
+`seen_hash` on a reference, `stale_since` on its record); the upgrade to it also puts the
+paths of stored references in the one form they are matched in (`./src//a.rs` becomes
+`src/a.rs`; of two references of a record to one file, the one already in that form is kept).
 
 ## Entities
 

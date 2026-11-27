@@ -82,7 +82,8 @@ path from 0.x data other than export and import.
   opened or edited, under the access decision of a recall, with those needing revalidation
   listed apart; `POST /v1/code/changed` reports a commit's files. `memhouse hook file-opened |
   file-edited | post-commit` are the adapters harnesses and git run: they take the file's git
-  blob hash (from git when it is installed), only call the API and never block a read, an edit
+  blob hash (they prefer git's own, and fall back to hashing the file as read when git is not
+  installed or cannot hash it), only call the API and never block a read, an edit
   or a commit;
   `memhouse connect claude-code --hooks` and `gemini --hooks` install them without touching
   other hooks, `memhouse hook install-git` the post-commit hook, and `memhouse remember

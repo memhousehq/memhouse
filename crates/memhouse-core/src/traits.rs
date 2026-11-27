@@ -119,6 +119,10 @@ pub struct Held<'a> {
     pub kind: Option<MemoryKind>,
     /// Only records of exactly this scope.
     pub scope: &'a Scope,
+    /// Only records whose `metadata.counted` is this (`Some(None)`: those without one). Part
+    /// of the lookup, not a filter on its result: nearer records of the other sort must not
+    /// use up the limit.
+    pub counted: Option<Option<&'a str>>,
 }
 
 #[async_trait]

@@ -472,6 +472,14 @@ pub struct RefChange {
     /// this request when `stale` is true and this is false.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub was_stale: bool,
+    /// Not a transition: the reference was stale already and only what was last seen of its
+    /// file changed (`seen_hash`; none for a deletion). Recorded and audited
+    /// (`memory.code_seen`), never part of an answer.
+    #[serde(skip)]
+    pub seen_only: bool,
+    /// With `seen_only`: the hash now recorded as last seen.
+    #[serde(skip)]
+    pub seen_hash: Option<String>,
 }
 
 /// A memory linked to a file, with the state of that link (TPL-05).
@@ -696,11 +704,15 @@ pub struct NewMemory {
     pub alt: Option<(String, Vec<f32>)>,
     pub structured: Option<Structured>,
     pub code_refs: Vec<CodeRef>,
+    /// A revision that named no references of its own: it takes those of the version it
+    /// replaces as they are when it is stored (`staleness::successor_refs`), not as they were
+    /// when the revision was made.
+    pub refs_inherited: bool,
 }
 
 impl NewMemory {
     pub fn new(memory: Memory, content_hash: String) -> NewMemory {
-        NewMemory { memory, embedding: None, content_hash, alt: None, structured: None, code_refs: vec![] }
+        NewMemory { memory, embedding: None, content_hash, alt: None, structured: None, code_refs: vec![], refs_inherited: false }
     }
 }
 

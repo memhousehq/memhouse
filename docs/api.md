@@ -822,7 +822,9 @@ the same comparison for its own answer, and nothing is stored or audited. What i
 applies to every memory about the file, whoever may read it: that the file changed is a fact
 about the repository. Each memory whose state changed gets an audit event: `memory.stale`,
 `memory.fresh` or `memory.code_moved`, with the event (`file.opened`, `file.edited`) in its
-detail.
+detail. A file whose reference is stale already and is seen with yet another hash changes no
+state and is in no answer; it is audited as `memory.code_seen`. Several states of one file
+in a request are applied in order, for a read-only caller's answer too.
 
 ### `POST /v1/code/changed`: files changed, deleted or renamed
 
@@ -864,14 +866,20 @@ reference to a deleted file has no hash to take: `400`, and the memory is revise
 only the references they name: `stale` is true while another reference is still stale, and
 the memory returns to default recall only when none is. The hash a file was last seen with is
 not necessarily the file as it is now: a client that checked the file itself passes the hash
-of what it checked. Needs `memory:write` and sight of the memory (`404` otherwise);
+of what it checked. A given hash confirms that content only: where the file was since seen
+with another hash, the reference takes the given one and stays stale (`stale` true, the
+reference's `seen_hash` the hash seen), until the file is seen with the confirmed content or
+that hash is confirmed. Needs `memory:write` and sight of the memory (`404` otherwise);
 `409` for a record that is not committed. Audited as `memory.revalidate` with the old and new
 hash of each reference.
 
 Revising a stale memory also ends its staleness: the new version supersedes it. References the
 revision inherits take the hash their file was last seen with, and a reference to a deleted
-file is not carried over. A revision that names `code_refs` itself is judged when it takes
-effect: a reference whose hash is not the one its file was last seen with starts stale.
+file is not carried over; they are taken when the revision is stored, in the same
+transaction, so a file reported while the revision was on its way is not missed. A revision
+that names `code_refs` itself is judged then too: a reference to a path whose reference on the
+replaced version is stale with another hash starts stale. A proposed revision is judged the
+same way and follows file reports while it waits for review ([limits](coding.md#limits)).
 
 ---
 

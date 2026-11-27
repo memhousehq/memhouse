@@ -1112,6 +1112,26 @@ struct WriteRow<'a> {
 impl PgStore {
     /// Fill the v2 columns of records written under schema v1, in batches (the same rules as
     /// `format::legacy_provenance`), then record schema version 2.
+    /// Code references written before paths were normalized on write, put in the form they
+    /// are matched in (`staleness::canonical_paths`): `./src//a.rs` becomes `src/a.rs`. Where
+    /// a memory then has two rows for one path, the one already in that form is kept.
+    async fn canonical_code_paths(&self) -> anyhow::Result<()> {
+        let mut tx = self.pool.begin().await?;
+        let rows: Vec<(Uuid, String)> = sqlx::query_as("SELECT memory_id, path FROM mh_code_ref ORDER BY memory_id, path FOR UPDATE").fetch_all(&mut *tx).await?;
+        let moves = memhouse_core::staleness::canonical_paths(&rows);
+        for (id, from, to) in &moves {
+            match to {
+                Some(to) => sqlx::query("UPDATE mh_code_ref SET path = $3 WHERE memory_id = $1 AND path = $2").bind(id).bind(from).bind(to).execute(&mut *tx).await?,
+                None => sqlx::query("DELETE FROM mh_code_ref WHERE memory_id = $1 AND path = $2").bind(id).bind(from).execute(&mut *tx).await?,
+            };
+        }
+        tx.commit().await?;
+        if !moves.is_empty() {
+            tracing::info!(rows = moves.len(), "schema upgrade: code reference paths put in canonical form");
+        }
+        Ok(())
+    }
+
     async fn backfill_v2(&self, embedder: &str, config: &str) -> anyhow::Result<()> {
         loop {
             let n = sqlx::query(
@@ -1634,7 +1654,11 @@ impl Store for PgStore {
         if stored_version.is_some_and(|v| v < 2) {
             self.backfill_v2(embedder_id, &config).await?;
         }
-        // v3 to v7 only add tables and indexes.
+        // v3 to v9 only add tables, columns and indexes. From version 10 a code reference is
+        // matched by its path in one form (TPL-04): rows written before are put in it.
+        if stored_version.is_some_and(|v| v < 10) {
+            self.canonical_code_paths().await?;
+        }
         sqlx::query("UPDATE mh_meta SET value = $1 WHERE key = 'schema_version' AND value::int < $2")
             .bind(SCHEMA_VERSION.to_string())
             .bind(SCHEMA_VERSION as i32)
@@ -1681,7 +1705,10 @@ impl Store for PgStore {
         let mut tx = self.pool.begin().await?;
         // A promotion takes its subject's lock before any row lock (the order a deletion takes
         // them in), so the two never wait on each other.
-        if let Some(first) = w.records.first().filter(|_| !w.requires.is_empty()) {
+        // So does a revision with code references: no observation of the subject's files runs
+        // between the read of its predecessor's references below and the commit (TPL-04).
+        let revises_code = |n: &NewMemory| n.memory.supersedes.is_some() && (n.refs_inherited || !n.code_refs.is_empty());
+        if let Some(first) = w.records.first().filter(|_| !w.requires.is_empty() || w.records.iter().any(revises_code)) {
             sqlx::query(SUBJECT_LOCK_SQL).bind(&w.tenant).bind(&first.memory.subject).execute(&mut *tx).await?;
         }
         if let Some(pid) = w.proposal {
@@ -1708,10 +1735,33 @@ impl Store for PgStore {
                 }
                 return Ok(false);
             }
-            let lines = Self::lines_of(&w.records);
+            // A revision's references are judged against its predecessor's as they are now,
+            // not as they were when the revision was made (a committed one and a candidate
+            // alike: a candidate is observed like any record from here on).
+            let mut records = std::borrow::Cow::Borrowed(&w.records);
+            for i in 0..w.records.len() {
+                let n = &w.records[i];
+                let Some(old) = n.memory.supersedes.filter(|_| revises_code(n)) else { continue };
+                let predecessor: Vec<CodeRef> = sqlx::query(
+                    "SELECT c.path, c.blob_hash, c.stale_since, c.seen_hash FROM mh_code_ref c JOIN mh_memory m ON m.id = c.memory_id \
+                     WHERE m.tenant = $1 AND c.memory_id = $2 ORDER BY c.path",
+                )
+                .bind(&w.tenant)
+                .bind(old)
+                .fetch_all(&mut *tx)
+                .await?
+                .iter()
+                .map(row_to_code_ref)
+                .collect::<anyhow::Result<_>>()?;
+                let now = memhouse_core::staleness::successor_refs(&n.code_refs, n.refs_inherited, &predecessor);
+                if now != n.code_refs {
+                    records.to_mut()[i].code_refs = now;
+                }
+            }
+            let lines = Self::lines_of(&records);
             let rows: Vec<WriteRow> = lines
                 .iter()
-                .zip(&w.records)
+                .zip(records.iter())
                 .map(|(r, n)| WriteRow { r, embedding: n.embedding.as_ref().map(|v| vec_literal(v)), alt: n.alt.as_ref().map(|(_, v)| vec_literal(v)) })
                 .collect();
             self.write_rows_in(&mut tx, &rows, false).await?;
@@ -1822,6 +1872,7 @@ impl Store for PgStore {
              AND ($6::text IS NULL OR kind = $6) \
              AND scope_org IS NOT DISTINCT FROM $7 AND scope_team IS NOT DISTINCT FROM $8 AND scope_agent IS NOT DISTINCT FROM $9 \
              AND scope_user IS NOT DISTINCT FROM $10 AND scope_session IS NOT DISTINCT FROM $11 \
+             AND (NOT $12::bool OR metadata ->> 'counted' IS NOT DISTINCT FROM $13) \
              ORDER BY embedding <=> $3::vector LIMIT $4",
         )
         .bind(tenant)
@@ -1835,6 +1886,8 @@ impl Store for PgStore {
         .bind(&scope.agent)
         .bind(&scope.user)
         .bind(&scope.session)
+        .bind(which.counted.is_some())
+        .bind(which.counted.flatten())
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(|(id, s)| (id, s as f32)).collect())
@@ -3217,6 +3270,11 @@ impl Store for PgStore {
             return Ok(vec![]);
         }
         let mut tx = self.pool.begin().await?;
+        // One observation of a subject at a time, and never during the insert of a revision
+        // that carries references (`apply_intake` takes the same lock): that insert reads
+        // the predecessor's references, and an observation between its read and its commit
+        // would see neither the predecessor (superseded) nor the successor (not yet there).
+        sqlx::query(SUBJECT_LOCK_SQL).bind(tenant).bind(subject).execute(&mut *tx).await?;
         // The records first, in id order, each statement on its own snapshot: a second
         // observation of a record waits here, and then reads the references the first one
         // committed. Taken after the references, the record lock would come too late: the
@@ -3334,10 +3392,14 @@ impl Store for PgStore {
         let stored: Vec<CodeRef> = sqlx::query(REFS).bind(tenant).bind(id).fetch_all(&mut *tx).await?.iter().map(row_to_code_ref).collect::<anyhow::Result<_>>()?;
         let written = memhouse_core::staleness::revalidated(&stored, refs)?;
         for c in &written {
-            sqlx::query("UPDATE mh_code_ref SET blob_hash = $3, stale_since = NULL, seen_hash = NULL WHERE memory_id = $1 AND path = $2")
+            // Not stale, except where the file was seen with another hash than the one
+            // confirmed (`staleness::revalidated`).
+            sqlx::query("UPDATE mh_code_ref SET blob_hash = $3, stale_since = $4, seen_hash = $5 WHERE memory_id = $1 AND path = $2")
                 .bind(id)
                 .bind(&c.path)
                 .bind(&c.blob_hash)
+                .bind(c.stale_since)
+                .bind(&c.seen_hash)
                 .execute(&mut *tx)
                 .await?;
         }

@@ -36,8 +36,9 @@ pub struct RefUpdate {
     /// The path the row is stored under before the update.
     pub path: String,
     pub now: Option<CodeRef>,
-    /// What the update means for the reference; `None` when only the hash last seen changed
-    /// on a reference that was stale already, or when the row is removed.
+    /// What the update means for the reference. Every update has one, so that every write
+    /// is audited: a transition, a move, a reference merged into another by a rename, or
+    /// only another hash seen on a reference that was stale already (`seen_only`).
     pub change: Option<RefChange>,
 }
 
@@ -63,6 +64,8 @@ pub fn paths_of(files: &[FileState]) -> Vec<String> {
 pub fn plan(rows: &[RefRow], files: &[FileState], at: DateTime<Utc>) -> Vec<RefUpdate> {
     // Each stored reference as it is now, or `None` once it was dropped.
     let mut now: Vec<Option<CodeRef>> = rows.iter().map(|r| Some(r.code.clone())).collect();
+    // For a dropped reference: the path of the reference that took its place.
+    let mut merged: Vec<Option<String>> = vec![None; rows.len()];
     for f in files {
         if let Some(from) = &f.renamed_from {
             for i in 0..rows.len() {
@@ -72,6 +75,7 @@ pub fn plan(rows: &[RefRow], files: &[FileState], at: DateTime<Utc>) -> Vec<RefU
                 let taken = (0..rows.len()).any(|j| j != i && rows[j].id == rows[i].id && now[j].as_ref().is_some_and(|c| c.path == f.path));
                 if taken {
                     now[i] = None;
+                    merged[i] = Some(f.path.clone());
                 } else if let Some(c) = now[i].as_mut() {
                     c.path = f.path.clone();
                 }
@@ -98,23 +102,107 @@ pub fn plan(rows: &[RefRow], files: &[FileState], at: DateTime<Utc>) -> Vec<RefU
     }
     rows.iter()
         .zip(now)
-        .filter(|(r, n)| n.as_ref() != Some(&r.code))
-        .map(|(r, n)| {
-            let change = n.as_ref().and_then(|c| {
-                let (was, is) = (r.code.stale_since.is_some(), c.stale_since.is_some());
-                let moved = c.path != r.code.path;
-                (moved || was != is).then(|| RefChange {
+        .zip(merged)
+        .filter(|((r, n), _)| n.as_ref() != Some(&r.code))
+        .map(|((r, n), merged)| {
+            let was = r.code.stale_since.is_some();
+            let change = match &n {
+                Some(c) => {
+                    let is = c.stale_since.is_some();
+                    let moved = c.path != r.code.path;
+                    let seen_only = !moved && was == is;
+                    RefChange {
+                        id: r.id,
+                        path: c.path.clone(),
+                        moved_from: moved.then(|| r.code.path.clone()),
+                        flagged: !was && is,
+                        cleared: was && !is,
+                        // The store fills both in: they depend on the memory's other references.
+                        stale: is,
+                        was_stale: was,
+                        seen_only,
+                        seen_hash: c.seen_hash.clone().filter(|_| seen_only),
+                    }
+                }
+                // Merged into the reference the memory already has at the new path: reported
+                // as a move there, and as cleared when the dropped reference was stale, so
+                // that a memory this leaves fresh is audited and leaves the session cache.
+                None => RefChange {
                     id: r.id,
-                    path: c.path.clone(),
-                    moved_from: moved.then(|| r.code.path.clone()),
-                    flagged: !was && is,
-                    cleared: was && !is,
-                    // The store fills both in: they depend on the memory's other references.
-                    stale: is,
+                    path: merged.unwrap_or_else(|| r.code.path.clone()),
+                    moved_from: Some(r.code.path.clone()),
+                    flagged: false,
+                    cleared: was,
+                    stale: false,
                     was_stale: was,
-                })
-            });
-            RefUpdate { id: r.id, path: r.code.path.clone(), now: n, change }
+                    seen_only: false,
+                    seen_hash: None,
+                },
+            };
+            RefUpdate { id: r.id, path: r.code.path.clone(), now: n, change: Some(change) }
+        })
+        .collect()
+}
+
+/// The references a revision is stored with (TPL-04), given those of the version it replaces
+/// as they are when the revision is stored. A store calls this in the transaction that inserts
+/// the revision, so no observation of a file can fall between the judgement and the insert.
+///
+/// - `inherited` (the revision named none of its own): the predecessor's references, each
+///   with the hash its file was last seen with, which is what the reviser had before them; a
+///   reference to a deleted file is not carried over. A rename or a restored file reported
+///   while the revision waited is therefore followed.
+/// - Otherwise the revision's own references. One whose file was seen, on the predecessor,
+///   with another hash than the revision names (or deleted) starts stale. A hash the
+///   predecessor never saw is the writer's statement and is taken as fresh.
+pub fn successor_refs(own: &[CodeRef], inherited: bool, predecessor: &[CodeRef]) -> Vec<CodeRef> {
+    if inherited {
+        return predecessor
+            .iter()
+            .filter_map(|r| match (&r.stale_since, &r.seen_hash) {
+                (None, _) => Some(r.as_written()),
+                (Some(_), Some(h)) => Some(CodeRef::new(r.path.clone(), h.clone())),
+                (Some(_), None) => None,
+            })
+            .collect();
+    }
+    own.iter()
+        .map(|r| {
+            let mut r = r.as_written();
+            if let Some(was) = predecessor.iter().find(|o| o.path == r.path && o.stale_since.is_some() && o.seen_hash.as_deref() != Some(r.blob_hash.as_str())) {
+                (r.stale_since, r.seen_hash) = (was.stale_since, was.seen_hash.clone());
+            }
+            r
+        })
+        .collect()
+}
+
+/// References as they are after file states are applied to them, in order, for an answer
+/// that records nothing: the same rules as [`plan`], on a copy.
+pub fn applied(id: Uuid, refs: &[CodeRef], files: &[FileState], at: DateTime<Utc>) -> Vec<CodeRef> {
+    let rows: Vec<RefRow> = refs.iter().map(|c| RefRow { id, code: c.clone() }).collect();
+    let updates = plan(&rows, files, at);
+    refs.iter()
+        .filter_map(|c| match updates.iter().find(|u| u.path == c.path) {
+            Some(u) => u.now.clone(),
+            None => Some(c.clone()),
+        })
+        .collect()
+}
+
+/// Stored paths that are not in the form references are matched in ([`normalize_path`]):
+/// written before paths were normalized on write. For each such row of `rows` (memory, path),
+/// the path it gets, or `None` when the memory already has a reference at that path (the row
+/// is then removed: the one in canonical form is kept, else the first by path). A path that
+/// cannot be normalized is left as it is.
+pub fn canonical_paths(rows: &[(Uuid, String)]) -> Vec<(Uuid, String, Option<String>)> {
+    let mut taken: HashSet<(Uuid, String)> = rows.iter().filter(|(_, p)| normalize_path(p).as_deref() == Some(p.as_str())).cloned().collect();
+    let mut rest: Vec<&(Uuid, String)> = rows.iter().filter(|(id, p)| !taken.contains(&(*id, p.clone()))).collect();
+    rest.sort();
+    rest.into_iter()
+        .filter_map(|(id, p)| {
+            let to = normalize_path(p).filter(|n| n.len() <= MAX_PATH_LEN)?;
+            Some((*id, p.clone(), taken.insert((*id, to.clone())).then_some(to)))
         })
         .collect()
 }
@@ -123,6 +211,12 @@ pub fn plan(rows: &[RefRow], files: &[FileState], at: DateTime<Utc>) -> Vec<RefU
 /// reference takes the given hash; without, every stale reference takes the hash its file was
 /// last seen with (one to a deleted file has none and stays stale). Returns the references
 /// that change, as they are afterwards.
+///
+/// A given hash confirms the memory against that content only. Where the file was since seen
+/// with another one (`stored` is read in the transaction that writes), the reference takes
+/// the given hash and stays stale, with the hash seen: the confirmation must not hide a
+/// change it did not look at. It stops being stale when the file is seen with the confirmed
+/// content, or is confirmed against what was seen.
 pub fn revalidated(stored: &[CodeRef], given: Option<&[CodeRef]>) -> anyhow::Result<Vec<CodeRef>> {
     match given {
         Some(given) => given
@@ -136,7 +230,11 @@ pub fn revalidated(stored: &[CodeRef], given: Option<&[CodeRef]>) -> anyhow::Res
                     stored.iter().any(|s| s.path == g.path),
                     crate::error::invalid(format!("the memory has no code reference to {:?}: expected one of its own paths (revise it to change them)", g.path))
                 );
-                Ok(g.as_written())
+                let mut now = g.as_written();
+                if let Some(s) = stored.iter().find(|s| s.path == g.path && s.stale_since.is_some() && s.seen_hash.as_ref().is_some_and(|h| *h != g.blob_hash)) {
+                    (now.stale_since, now.seen_hash) = (s.stale_since, s.seen_hash.clone());
+                }
+                Ok(now)
             })
             .collect(),
         None => Ok(stored.iter().filter(|s| s.stale_since.is_some()).filter_map(|s| s.seen_hash.as_ref().map(|h| CodeRef::new(s.path.clone(), h.clone()))).collect()),
@@ -270,8 +368,10 @@ impl Engine {
     /// Record what files of a repository were seen as (TPL-04): references whose stored hash
     /// differs become stale, those seen with their stored content again stop being stale, and
     /// a rename moves them. Every memory whose state changed gets an audit event
-    /// (`memory.stale`, `memory.fresh`, `memory.code_moved`) with `why` in its detail. Returns
-    /// every change, whoever may read the memory: callers filter what they show.
+    /// (`memory.stale`, `memory.fresh`, `memory.code_moved`) with `why` in its detail; another
+    /// hash seen on a reference that was stale already is audited as `memory.code_seen` and
+    /// is no transition. Returns every transition and move, whoever may read the memory:
+    /// callers filter what they show.
     pub async fn files_observed(&self, tenant: &str, subject: &str, files: &[FileState], actor: &str, why: serde_json::Value) -> anyhow::Result<Vec<RefChange>> {
         let files = observed_files(files)?;
         // The precision every store keeps, so the same observation reads the same in each.
@@ -286,13 +386,24 @@ impl Engine {
             let mut out = vec![];
             for (id, of) in &by_memory {
                 let paths = |pick: &dyn Fn(&RefChange) -> bool| -> Vec<serde_json::Value> {
-                    of.iter().filter(|c| pick(c)).map(|c| serde_json::json!({ "path": c.path, "moved_from": c.moved_from })).collect()
+                    of.iter()
+                        .filter(|c| pick(c))
+                        .map(|c| {
+                            if c.seen_only {
+                                serde_json::json!({ "path": c.path, "seen_hash": c.seen_hash })
+                            } else {
+                                serde_json::json!({ "path": c.path, "moved_from": c.moved_from })
+                            }
+                        })
+                        .collect()
                 };
                 let stale = of.iter().any(|c| c.stale);
                 for (action, picked) in [
                     ("memory.stale", paths(&|c| c.flagged)),
                     ("memory.fresh", paths(&|c| c.cleared)),
                     ("memory.code_moved", paths(&|c| c.moved_from.is_some() && !c.flagged && !c.cleared)),
+                    // The hash a later revalidation without `code_refs` would take.
+                    ("memory.code_seen", paths(&|c| c.seen_only)),
                 ] {
                     if !picked.is_empty() {
                         out.push(crate::intake::AuditEntry {
@@ -307,7 +418,8 @@ impl Engine {
             }
             out
         };
-        let changes = self.store.code_refs_observe(tenant, subject, &files, at, &events).await?;
+        let mut changes = self.store.code_refs_observe(tenant, subject, &files, at, &events).await?;
+        changes.retain(|c| !c.seen_only);
         for (label, n) in [
             ("flagged", changes.iter().filter(|c| c.flagged).count()),
             ("cleared", changes.iter().filter(|c| c.cleared).count()),
@@ -354,20 +466,30 @@ impl Engine {
             }
         }
         let mut result = FileTouchedResult { changes: all_changes.into_iter().filter(|c| seen.contains_key(&c.id)).collect(), ..Default::default() };
-        // For a reader whose observation is not recorded: the same comparison, for this answer.
-        let differs = |code: &CodeRef| {
-            files.iter().any(|f| {
-                (f.path == code.path || f.renamed_from.as_deref() == Some(code.path.as_str())) && (f.deleted || f.blob_hash.as_deref().is_some_and(|h| h != code.blob_hash))
-            })
-        };
         for (id, at_paths) in linked {
             let memory = seen[&id].clone();
-            if memory.stale_since.is_some() || (!mark && at_paths.iter().any(differs)) {
-                // All of its references: the stale one may be to a file this request did not name.
-                let code_refs = self.store.representations(&tenant, id).await?.1;
+            if mark {
+                if memory.stale_since.is_some() {
+                    // All of its references: the stale one may be to a file this request did not name.
+                    let code_refs = self.store.representations(&tenant, id).await?.1;
+                    result.needs_revalidation.push(LinkedMemory { memory, code_refs });
+                } else {
+                    result.memories.push(LinkedMemory { memory, code_refs: at_paths });
+                }
+                continue;
+            }
+            // For a reader whose observation is not recorded: the same rules, applied in the
+            // same order to a copy of the references, for this answer alone. A memory that is
+            // stale may be so by a reference this request did not name: all of them count.
+            let mut code_refs = applied(id, &at_paths, &files, now);
+            if memory.stale_since.is_some() || code_refs.iter().any(|c| c.stale_since.is_some()) {
+                code_refs = applied(id, &self.store.representations(&tenant, id).await?.1, &files, now);
+            }
+            if code_refs.iter().any(|c| c.stale_since.is_some()) {
                 result.needs_revalidation.push(LinkedMemory { memory, code_refs });
             } else {
-                result.memories.push(LinkedMemory { memory, code_refs: at_paths });
+                let named: Vec<CodeRef> = code_refs.into_iter().filter(|c| paths.contains(&c.path)).collect();
+                result.memories.push(LinkedMemory { memory, code_refs: named });
             }
         }
         // Newest first, like a list.
@@ -506,11 +628,13 @@ mod tests {
         assert!(c.flagged && !c.cleared && c.id == Uuid::from_u128(1) && c.moved_from.is_none());
         let stale = ups[0].now.clone().unwrap();
         assert_eq!((stale.stale_since, stale.seen_hash.as_deref()), (Some(at()), Some("h2")));
-        // Seen again with another hash: still stale since the first time, the hash updated, no change reported.
+        // Seen again with another hash: still stale since the first time, the hash updated; a change that is no transition.
         let rows2 = vec![RefRow { id: rows[0].id, code: stale.clone() }];
         let later = at() + chrono::Duration::hours(1);
         let ups2 = plan(&rows2, &[FileState::present("src/a.rs", "h3")], later);
-        assert_eq!((ups2[0].now.as_ref().unwrap().stale_since, ups2[0].now.as_ref().unwrap().seen_hash.as_deref(), ups2[0].change.is_none()), (Some(at()), Some("h3"), true));
+        assert_eq!((ups2[0].now.as_ref().unwrap().stale_since, ups2[0].now.as_ref().unwrap().seen_hash.as_deref()), (Some(at()), Some("h3")));
+        let seen = ups2[0].change.clone().unwrap();
+        assert!(seen.seen_only && seen.seen_hash.as_deref() == Some("h3") && !seen.flagged && !seen.cleared && seen.moved_from.is_none());
         // Seen with the stored hash again: cleared.
         let ups3 = plan(&rows2, &[FileState::present("src/a.rs", "h1")], later);
         assert!(ups3[0].change.as_ref().unwrap().cleared && ups3[0].now.as_ref().unwrap().stale_since.is_none());
@@ -535,6 +659,13 @@ mod tests {
         assert!(of(2, "old.rs").unwrap().change.as_ref().unwrap().flagged);
         // A memory that already references the new path keeps that one; the old one is dropped.
         assert!(of(3, "old.rs").unwrap().now.is_none() && of(3, "new.rs").is_none());
+        // The drop is reported as a move; and as cleared when the dropped reference was stale.
+        let merged = of(3, "old.rs").unwrap().change.clone().unwrap();
+        assert!(merged.path == "new.rs" && merged.moved_from.as_deref() == Some("old.rs") && !merged.cleared && !merged.flagged);
+        let mut stale = rows[3].clone();
+        (stale.code.stale_since, stale.code.seen_hash) = (Some(at()), Some("h7".into()));
+        let ups = plan(&[rows[2].clone(), stale], &[FileState::renamed("old.rs", "new.rs", "h1")], at());
+        assert!(ups.len() == 1 && ups[0].now.is_none() && ups[0].change.as_ref().is_some_and(|c| c.cleared && c.was_stale && c.path == "new.rs"), "{ups:?}");
         // A rename then an edit in one batch: judged by the last state.
         let both = plan(&rows[..1], &[FileState::renamed("old.rs", "new.rs", "h1"), FileState::present("new.rs", "h2")], at());
         assert!(both[0].change.as_ref().unwrap().flagged && both[0].now.as_ref().unwrap().path == "new.rs");
@@ -550,6 +681,59 @@ mod tests {
         assert_eq!(revalidated(&stored, None).unwrap(), vec![CodeRef::new("a.rs", "h2")]);
         assert_eq!(revalidated(&stored, Some(&[CodeRef::new("b.rs", "h5")])).unwrap(), vec![CodeRef::new("b.rs", "h5")]);
         assert!(revalidated(&stored, Some(&[CodeRef::new("zzz.rs", "h5")])).is_err());
+        // The hash last seen, given: fresh. Another one: the file was seen with `h2` since,
+        // so the reference takes the hash and stays stale.
+        assert_eq!(revalidated(&stored, Some(&[CodeRef::new("a.rs", "h2")])).unwrap(), vec![CodeRef::new("a.rs", "h2")]);
+        let kept = revalidated(&stored, Some(&[CodeRef::new("a.rs", "h1b")])).unwrap();
+        assert_eq!((kept[0].blob_hash.as_str(), kept[0].stale_since, kept[0].seen_hash.as_deref()), ("h1b", Some(at()), Some("h2")));
+    }
+
+    #[test]
+    fn a_revision_takes_its_references_from_the_state_it_is_stored_in() {
+        let mut seen = CodeRef::new("a.rs", "h1");
+        (seen.stale_since, seen.seen_hash) = (Some(at()), Some("h2".into()));
+        let mut gone = CodeRef::new("b.rs", "h1");
+        gone.stale_since = Some(at());
+        let predecessor = vec![seen.clone(), gone, CodeRef::new("moved/c.rs", "h1")];
+        // Inherited: as last seen, without the deleted file, at the path a rename left.
+        assert_eq!(
+            successor_refs(&[CodeRef::new("a.rs", "h1"), CodeRef::new("c.rs", "h1")], true, &predecessor),
+            vec![CodeRef::new("a.rs", "h2"), CodeRef::new("moved/c.rs", "h1")]
+        );
+        // Its own: the hash last seen is fresh, another one is stale as the predecessor was,
+        // and a path or a hash the predecessor never saw is the writer's statement.
+        let own = successor_refs(&[CodeRef::new("a.rs", "h2"), CodeRef::new("new.rs", "n1")], false, &predecessor);
+        assert_eq!(own, vec![CodeRef::new("a.rs", "h2"), CodeRef::new("new.rs", "n1")]);
+        let old = successor_refs(&[CodeRef::new("a.rs", "h1"), CodeRef::new("b.rs", "h1")], false, &predecessor);
+        assert_eq!((old[0].stale_since, old[0].seen_hash.as_deref(), old[1].stale_since, old[1].seen_hash.as_deref()), (Some(at()), Some("h2"), Some(at()), None));
+    }
+
+    #[test]
+    fn reports_applied_in_order_to_a_copy() {
+        let id = Uuid::from_u128(1);
+        let refs = vec![CodeRef::new("a.rs", "A"), CodeRef::new("other.rs", "O")];
+        // Changed and changed back in one request: as it was. Changed only: stale.
+        assert_eq!(applied(id, &refs, &[FileState::present("a.rs", "B"), FileState::present("a.rs", "A")], at()), refs);
+        let once = applied(id, &refs, &[FileState::present("a.rs", "B")], at());
+        assert!(once[0].stale_since == Some(at()) && once[1] == refs[1]);
+        assert_eq!(applied(id, &refs, &[FileState::renamed("a.rs", "b.rs", "A")], at())[0], CodeRef::new("b.rs", "A"));
+    }
+
+    #[test]
+    fn stored_paths_in_canonical_form() {
+        let (m, n) = (Uuid::from_u128(1), Uuid::from_u128(2));
+        let rows: Vec<(Uuid, String)> =
+            [(m, "./src//a.rs"), (m, "src/a.rs"), (m, "src\\b.rs"), (m, "./src/b.rs"), (m, "../x"), (n, "./src/a.rs"), (n, "ok.rs")].map(|(id, p)| (id, p.to_string())).to_vec();
+        assert_eq!(
+            canonical_paths(&rows),
+            vec![
+                // The canonical row is kept; of two that are not, the first by path.
+                (m, "./src//a.rs".to_string(), None),
+                (m, "./src/b.rs".to_string(), Some("src/b.rs".to_string())),
+                (m, "src\\b.rs".to_string(), None),
+                (n, "./src/a.rs".to_string(), Some("src/a.rs".to_string())),
+            ]
+        );
     }
 
     #[test]

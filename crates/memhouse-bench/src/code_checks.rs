@@ -388,6 +388,19 @@ async fn until_revalidated(e: &Engine) -> Outcome {
     // Seen again, still changed: nothing new to flag or audit.
     let again = root.files_changed(changed(subj, vec![FileState::present("src/cache.rs", "c3")])).await?;
     s.case("stale: flagged once", again.flagged == 0 && audited(e, "memory.stale", fact).await?.len() == 1, || format!("{again:?}"));
+    // What was last seen of the file did change, and a revalidation would take it: audited,
+    // without a transition in the answer. The same hash once more changes and audits nothing.
+    let seen_events = audited(e, "memory.code_seen", fact).await?;
+    root.files_changed(changed(subj, vec![FileState::present("src/cache.rs", "c3")])).await?;
+    s.case(
+        "stale: another hash seen is audited, and is no transition",
+        again.changes.is_empty()
+            && seen_events.len() == 1
+            && seen_events[0]["files"][0]["path"] == "src/cache.rs"
+            && seen_events[0]["files"][0]["seen_hash"] == "c3"
+            && audited(e, "memory.code_seen", fact).await?.len() == 1,
+        || format!("answer {again:?}; events {seen_events:?}"),
+    );
 
     // The file is seen with the content the memory was written about: no longer stale.
     let back = root.files_changed(changed(subj, vec![FileState::present("src/cache.rs", "c1")])).await?;
@@ -487,6 +500,97 @@ async fn until_revalidated(e: &Engine) -> Outcome {
             && current.superseded == Some(behind.id)
             && current_fresh,
         || format!("successor stale: {behind_stale}, refs {behind_refs:?}; the next revision fresh: {current_fresh}"),
+    );
+
+    // The same when a reviewer commits the revision: a proposed revision is judged when it is
+    // stored and observed while it waits, so what the reviewer commits is as stale as the
+    // files say. One that names the content last seen is committed fresh.
+    let proposer = who(e, "agent:stale-proposer", PrincipalKind::Agent, |p| p.subjects = vec!["repo:*".into()]).await?;
+    let procedure = |content: String, refs: Vec<CodeRef>| RememberRequest {
+        subject: Some(subj.into()),
+        content,
+        kind: Some(MemoryKind::Procedural),
+        code_refs: refs,
+        wait: true,
+        ..Default::default()
+    };
+    let stale_of = |id: Uuid| async move { Ok::<_, anyhow::Error>(e.store.get(TENANT, id).await?.map(|m| (m.status, m.stale_since.is_some()))) };
+    let proc1 =
+        root.remember(procedure("Regenerate the lockfile after editing the manifest of the release tooling.".into(), vec![CodeRef::new("tools/release.toml", "t1")])).await?;
+    root.files_changed(changed(subj, vec![FileState::present("tools/release.toml", "t2")])).await?;
+    let proposed = proposer
+        .revise(ReviseRequest {
+            id: proc1.id,
+            content: "Regenerate the lockfile after editing the manifest of the release tooling, then run the audit.".into(),
+            code_refs: Some(vec![CodeRef::new("tools/release.toml", "t1")]),
+            wait: true,
+            ..Default::default()
+        })
+        .await?;
+    let held = stale_of(proposed.id).await?;
+    let admitted = root.review(ReviewRequest { id: proposed.id, action: ReviewAction::Commit, reason: None }).await?;
+    let after_admit = stale_of(proposed.id).await?;
+    s.case(
+        "a proposed revision about content its file no longer has is committed stale by its reviewer",
+        held == Some((MemoryStatus::Candidate, true)) && admitted.status == MemoryStatus::Committed && after_admit == Some((MemoryStatus::Committed, true)),
+        || format!("held {held:?}; reviewed {}; then {after_admit:?}", admitted.status.as_str()),
+    );
+    let proc2 = root.remember(procedure("Bump the changelog before tagging the documentation site.".into(), vec![CodeRef::new("tools/docs.toml", "d1")])).await?;
+    root.files_changed(changed(subj, vec![FileState::present("tools/docs.toml", "d2")])).await?;
+    let current_proposal = proposer
+        .revise(ReviseRequest {
+            id: proc2.id,
+            content: "Bump the changelog before tagging the documentation site, and link the release notes.".into(),
+            code_refs: Some(vec![CodeRef::new("tools/docs.toml", "d2")]),
+            wait: true,
+            ..Default::default()
+        })
+        .await?;
+    let waiting = stale_of(current_proposal.id).await?;
+    // The file changes while the proposal waits: the candidate is flagged like any record.
+    let proc3 = root.remember(procedure("Rebuild the search index after changing the tokenizer settings.".into(), vec![CodeRef::new("tools/index.toml", "i1")])).await?;
+    let waiting_proposal = proposer
+        .revise(ReviseRequest {
+            id: proc3.id,
+            content: "Rebuild the search index after changing the tokenizer settings or the stop words.".into(),
+            wait: true,
+            ..Default::default()
+        })
+        .await?;
+    root.files_changed(changed(subj, vec![FileState::present("tools/index.toml", "i2")])).await?;
+    root.review(ReviewRequest { id: current_proposal.id, action: ReviewAction::Commit, reason: None }).await?;
+    root.review(ReviewRequest { id: waiting_proposal.id, action: ReviewAction::Commit, reason: None }).await?;
+    let (fresh_commit, flagged_commit) = (stale_of(current_proposal.id).await?, stale_of(waiting_proposal.id).await?);
+    s.case(
+        "a proposed revision is committed fresh when it names the content last seen, and stale when its file changed while it waited",
+        waiting == Some((MemoryStatus::Candidate, false)) && fresh_commit == Some((MemoryStatus::Committed, false)) && flagged_commit == Some((MemoryStatus::Committed, true)),
+        || format!("waiting {waiting:?}; committed {fresh_commit:?}; changed while waiting {flagged_commit:?}"),
+    );
+
+    // A confirmation of one content does not hide another seen since: the reference takes
+    // the confirmed hash and stays stale until the file is seen with it, or the content
+    // last seen is confirmed.
+    let conf = linked(&root, subj, &words("confirm", 1), &[("src/conf.rs", "f1")]).await?;
+    root.files_changed(changed(subj, vec![FileState::present("src/conf.rs", "f2")])).await?;
+    root.files_changed(changed(subj, vec![FileState::present("src/conf.rs", "f3")])).await?;
+    let late = root.revalidate(RevalidateRequest { id: conf, code_refs: Some(vec![CodeRef::new("src/conf.rs", "f2")]), ..Default::default() }).await?;
+    let late_out = !has(&root.recall(ask(subj, &words("confirm", 1))).await?, conf);
+    let exact = root.revalidate(RevalidateRequest { id: conf, code_refs: Some(vec![CodeRef::new("src/conf.rs", "f3")]), ..Default::default() }).await?;
+    s.case(
+        "revalidation with a hash older than the one last seen leaves the memory stale",
+        late.stale && late.code_refs.iter().any(|r| r.blob_hash == "f2" && r.seen_hash.as_deref() == Some("f3")) && late_out && !exact.stale,
+        || format!("with the older hash: {late:?} (left out of recall: {late_out}); with the one last seen: {exact:?}"),
+    );
+
+    // A rename onto a file the memory already references drops the old reference; when that
+    // was its only stale one, the memory is current again, and that is reported and audited.
+    let merge = linked(&root, subj, &words("merged", 1), &[("src/m1.rs", "x1"), ("src/m2.rs", "y1")]).await?;
+    root.files_changed(changed(subj, vec![FileState::present("src/m1.rs", "x2")])).await?;
+    let merged = root.files_changed(changed(subj, vec![FileState::renamed("src/m1.rs", "src/m2.rs", "y1")])).await?;
+    s.case(
+        "a stale reference merged away by a rename clears the memory, reported and audited",
+        merged.cleared == 1 && has(&root.recall(ask(subj, &words("merged", 1))).await?, merge) && audited(e, "memory.fresh", merge).await?.len() == 1,
+        || format!("{merged:?}"),
     );
 
     // A stale preference applies nowhere: it does not override the same preference at a
@@ -705,6 +809,14 @@ async fn access(e: &Engine) -> Outcome {
             && renamed_changed.memories.is_empty()
             && renamed_changed.needs_revalidation.iter().map(|l| l.memory.id).collect::<BTreeSet<_>>() == BTreeSet::from([open, labelled]),
         || format!("same content: {:?}; other content: {:?}", seen(&renamed_same), seen(&renamed_changed)),
+    );
+    // Several reports of one file in a request are applied in order, as a recording caller's
+    // are: changed and back again is as it was.
+    let there_and_back = reader.file_touched(opened(subj, FileEvent::Edited, vec![FileState::present(f, "b2"), FileState::present(f, "b1")])).await?;
+    s.case(
+        "a read-only caller's reports are applied in order: the last state of a file counts",
+        there_and_back.needs_revalidation.is_empty() && there_and_back.memories.iter().map(|l| l.memory.id).collect::<BTreeSet<_>>() == BTreeSet::from([open, labelled]),
+        || format!("{:?}", seen(&there_and_back)),
     );
     let unmarked = stored().await? == stored_before;
     let events_after = e.store.audit_log(TENANT, 5000).await?.len();
@@ -970,9 +1082,64 @@ async fn promotion(e: &Engine) -> Outcome {
         })
         .await?;
     let committed_plans = plans.iter().filter(|m| m.content == planned && m.status == MemoryStatus::Committed).count();
-    s.case("a plan marked as a correction is not promoted by repeating it", committed_plans == 0 && plans.iter().any(|m| m.content == planned), || {
-        format!("{committed_plans} committed of {} stored", plans.iter().filter(|m| m.content == planned).count())
+    let held_plans = plans.iter().filter(|m| m.content == planned && m.status == MemoryStatus::Candidate).count();
+    s.case("a plan marked as a correction is held for its reviewer, and not promoted by repeating it", committed_plans == 0 && held_plans >= 1, || {
+        format!("{committed_plans} committed, {held_plans} held, of {} stored", plans.iter().filter(|m| m.content == planned).count())
     });
+    // A proposal marked as both an inferred signal and a correction is counted as a
+    // correction: its repeats promote it, they do not only wait for a reviewer.
+    let both = |text: &str| RememberRequest { metadata: Some(json!({ "correction": true, "signal": true })), ..correction(text) };
+    let dual = "Squash fixup commits before opening a pull request in this repository.";
+    let d1 = agent.remember(both(dual)).await?;
+    let d1_counted = e.store.get(TENANT, d1.id).await?.map(|m| m.metadata["counted"].clone());
+    for _ in 0..2 {
+        agent.remember(both(dual)).await?;
+    }
+    let d1_after = state(d1.id).await?;
+    s.case(
+        "a correction that is also marked as a signal is counted as a correction",
+        d1_counted == Some(json!("correction")) && d1_after.as_ref().map(|x| x.0) == Some(MemoryStatus::Committed),
+        || format!("counted as {d1_counted:?}; after three: {d1_after:?}"),
+    );
+    // The held correction is looked up among corrections: ordinary held signals nearer to
+    // the repeat do not use up the lookup's limit and hide it.
+    if let Some(identity) = e.store.embedding_identity().await?.0 {
+        let near_subj = "repo:held-near";
+        let axis = |tilt: f32| {
+            let mut v = vec![0.0f32; identity.dim];
+            (v[0], v[1]) = ((1.0 - tilt * tilt).sqrt(), tilt);
+            v
+        };
+        let template = e.store.get(TENANT, d1.id).await?.ok_or_else(|| anyhow::anyhow!("the record is gone"))?;
+        let mut rows = vec![];
+        let mut correction_id = None;
+        for (i, (tilt, counted)) in [(0.0, false), (0.01, false), (0.02, false), (0.3, true)].into_iter().enumerate() {
+            let mut m = template.clone();
+            (m.id, m.subject, m.status) = (Uuid::now_v7(), near_subj.to_string(), MemoryStatus::Candidate);
+            m.content = format!("held near {i}");
+            m.metadata = if counted { json!({ "held": "signal", "signals": 1, "counted": "correction" }) } else { json!({ "held": "signal", "signals": 1, "review": true }) };
+            if counted {
+                correction_id = Some(m.id);
+            }
+            let mut n = memhouse_core::types::NewMemory::new(m.clone(), memhouse_core::engine::content_hash(&m.content));
+            n.embedding = Some(axis(tilt));
+            rows.push(n);
+        }
+        e.store.insert(&rows).await?;
+        let lookup = |counted: Option<Option<&'static str>>| {
+            let scope = template.scope.clone();
+            async move {
+                let held = memhouse_core::traits::Held { reason: "signal", kind: Some(MemoryKind::Procedural), scope: &scope, counted };
+                Ok::<_, anyhow::Error>(e.store.nearest_held(TENANT, near_subj, &axis(0.0), 3, &held).await?.into_iter().map(|(id, _)| id).collect::<Vec<_>>())
+            }
+        };
+        let (corrections, signals, any) = (lookup(Some(Some("correction"))).await?, lookup(Some(None)).await?, lookup(None).await?);
+        s.case(
+            "a held correction is found behind nearer ordinary signals",
+            corrections == correction_id.into_iter().collect::<Vec<_>>() && signals.len() == 3 && !signals.contains(&correction_id.unwrap_or_default()) && any.len() == 3,
+            || format!("corrections {corrections:?}; signals {signals:?}; unfiltered {any:?}; the correction is {correction_id:?}"),
+        );
+    }
     // A procedure that does not match the task never costs the caller the memory ranked
     // below it: with k = 1 and no reserve (duplicate removal off), the place is filled.
     let refill = "repo:refill";
@@ -984,11 +1151,30 @@ async fn promotion(e: &Engine) -> Outcome {
         .await?;
     let below = root.remember(RememberRequest { subject: Some(refill.into()), content: "logo xyz qrs tuv".into(), wait: true, ..Default::default() }).await?;
     let one = root.recall(RecallRequest { mode: Some(RetrievalMode::Dense), k: Some(1), ..ask(refill, "abc def ghi logo") }).await?;
+    // A recall of procedures alone: the one that matches the task is ranked below one that
+    // does not (the query repeats the other's words, which are no content words).
+    let refill2 = "repo:refill-procedures";
+    let proc = |content: &str| RememberRequest { subject: Some(refill2.into()), content: content.into(), kind: Some(MemoryKind::Procedural), wait: true, ..Default::default() };
+    root.remember(proc("abc def ghi jkl")).await?;
+    let eligible = root.remember(proc("Rotate the signing certificate through the vault console.")).await?;
+    let only_procedures = root
+        .recall(RecallRequest {
+            mode: Some(RetrievalMode::Dense),
+            k: Some(1),
+            kinds: Some(vec![MemoryKind::Procedural]),
+            ..ask(refill2, "abc def ghi jkl abc def ghi jkl certificate vault")
+        })
+        .await?;
     e.policy_rollback(TENANT, Some(memhouse_core::policy::PolicyTarget::Default), "admin:bench").await?;
     s.case(
         "the place of a procedure that does not match is filled from below it",
         near.status == MemoryStatus::Committed && one.hits.iter().map(|h| h.memory.id).collect::<Vec<_>>() == vec![below.id],
         || format!("procedure {}; returned {:?}, expected [{}]", near.status.as_str(), one.hits.iter().map(|h| h.memory.id).collect::<Vec<_>>(), below.id),
+    );
+    s.case(
+        "the place of a procedure that does not match is filled by a procedure that does",
+        eligible.status == MemoryStatus::Committed && only_procedures.hits.iter().map(|h| h.memory.id).collect::<Vec<_>>() == vec![eligible.id],
+        || format!("returned {:?}, expected [{}]", only_procedures.hits.iter().map(|h| h.memory.id).collect::<Vec<_>>(), eligible.id),
     );
     let touched = agent.file_touched(FileTouchedRequest { query: Some(task.into()), ..opened(subj, FileEvent::Opened, vec![FileState::present("api/schema.json", "s1")]) }).await?;
     s.case(

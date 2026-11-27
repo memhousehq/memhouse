@@ -438,7 +438,7 @@ pub async fn run_store_kit(store: Arc<dyn Store>) -> Report {
     };
     r.outcome(
         "code_refs_observe_marks_staleness",
-        "a file seen with another hash, deleted, or renamed with other content makes the references to it stale, and their records with them; the stored hash seen again clears it; a rename moves the reference; nothing else changes",
+        "a file seen with another hash, deleted, or renamed with other content makes the references to it stale, and their records with them; the stored hash seen again clears it; a rename moves the reference; nothing else changes; a revision is stored with its references judged against its predecessor's as they are then",
         async {
             let parser = linked("The parser keeps its token table in a perfect hash.", vec![CodeRef::new("src/parse.rs", "p1"), CodeRef::new("src/lex.rs", "l1")]).await?;
             let lexer = linked("The lexer never allocates on the hot path.", vec![CodeRef::new("src/lex.rs", "l1")]).await?;
@@ -487,20 +487,70 @@ pub async fn run_store_kit(store: Arc<dyn Store>) -> Report {
             let chain_refs: Vec<(String, String)> = store.representations(t, chain).await?.1.into_iter().map(|c| (c.path, c.blob_hash)).collect();
             let chained = renamed_chain.as_ref().is_ok_and(|c| c.len() == 2) && chain_refs == vec![("src/b.rs".to_string(), "a1".to_string()), ("src/c.rs".to_string(), "b1".to_string())];
             let audited = store.audit_log(t, 50).await?.iter().any(|e| e.action == "kit.observed" && e.memory_id == Some(chain) && e.detail["changes"] == 2);
+            // A rename onto a path the record already references drops the old reference. If
+            // that one was stale, the record is fresh again, and the change says so.
+            let merge = linked("The codec tables are generated at build time.", vec![CodeRef::new("src/m1.rs", "x1"), CodeRef::new("src/m2.rs", "y1")]).await?;
+            store.code_refs_observe(t, repo, &[FileState::present("src/m1.rs", "x2")], at, &memhouse_core::traits::no_audit).await?;
+            let dropped = store.code_refs_observe(t, repo, &[FileState::renamed("src/m1.rs", "src/m2.rs", "y1")], at, &memhouse_core::traits::no_audit).await?;
+            let merge_refs: Vec<(String, String)> = store.representations(t, merge).await?.1.into_iter().map(|c| (c.path, c.blob_hash)).collect();
+            let merged = dropped.len() == 1
+                && dropped[0].cleared
+                && dropped[0].was_stale
+                && !dropped[0].stale
+                && dropped[0].moved_from.as_deref() == Some("src/m1.rs")
+                && merge_refs == vec![("src/m2.rs".to_string(), "y1".to_string())]
+                && stale_of(merge).await?.is_none();
+            // A revision is stored with its references judged against its predecessor's as
+            // they are when it is stored, whatever was read when the revision was made: here
+            // the files are seen between that read and the insert.
+            let revision = |old: Uuid, refs: Vec<CodeRef>, inherited: bool| {
+                let store = &store;
+                async move {
+                    let mut m = store.get(t, old).await?.ok_or_else(|| anyhow::anyhow!("the record to revise is not stored"))?;
+                    (m.id, m.supersedes) = (Uuid::now_v7(), Some(old));
+                    m.content = format!("{} (revised)", m.content);
+                    let mut n = NewMemory::new(m.clone(), memhouse_core::engine::content_hash(&m.content));
+                    (n.code_refs, n.refs_inherited) = (refs, inherited);
+                    let write = memhouse_core::intake::IntakeWrite { tenant: t.to_string(), records: vec![n], supersede: vec![(old, m.id)], ..Default::default() };
+                    anyhow::ensure!(store.apply_intake(&write).await?, "the revision was not written");
+                    let refs: Vec<(String, String, bool, Option<String>)> =
+                        store.representations(t, m.id).await?.1.into_iter().map(|c| (c.path, c.blob_hash, c.stale_since.is_some(), c.seen_hash)).collect();
+                    Ok::<_, anyhow::Error>((refs, stale_of(m.id).await?.is_some()))
+                }
+            };
+            let own = linked("The session store evicts by last use.", vec![CodeRef::new("src/s1.rs", "s1")]).await?;
+            store.code_refs_observe(t, repo, &[FileState::present("src/s1.rs", "s2")], at, &memhouse_core::traits::no_audit).await?;
+            let own_after = revision(own, vec![CodeRef::new("src/s1.rs", "s1")], false).await?;
+            let taken = linked("The upload path streams to disk in chunks.", vec![CodeRef::new("src/u1.rs", "u1"), CodeRef::new("src/u2.rs", "v1")]).await?;
+            store.code_refs_observe(t, repo, &[FileState::present("src/u1.rs", "u2")], at, &memhouse_core::traits::no_audit).await?;
+            // Read here by the reviser: `u1.rs` as last seen, `u2.rs`. Then the first is seen
+            // restored and the second renamed.
+            store.code_refs_observe(t, repo, &[FileState::present("src/u1.rs", "u1"), FileState::renamed("src/u2.rs", "src/u3.rs", "v1")], at, &memhouse_core::traits::no_audit).await?;
+            let taken_after = revision(taken, vec![CodeRef::new("src/u1.rs", "u2"), CodeRef::new("src/u2.rs", "v1")], true).await?;
+            let judged = own_after == (vec![("src/s1.rs".to_string(), "s1".to_string(), true, Some("s2".to_string()))], true)
+                && taken_after == (vec![("src/u1.rs".to_string(), "u1".to_string(), false, None), ("src/u3.rs".to_string(), "v1".to_string(), false, None)], false);
             Ok(unless(
                 one && since == (Some(at), None, None)
                     && elsewhere == 0
-                    && again.is_empty()
+                    // Another hash on a reference that is stale already: no transition, and
+                    // still a change, so that it is audited.
+                    && again.len() == 1
+                    && again[0].seen_only
+                    && again[0].seen_hash.as_deref() == Some("p3")
+                    && !again[0].flagged
+                    && !again[0].cleared
                     && seen.as_ref().is_some_and(|c| c.stale_since == Some(at) && c.seen_hash.as_deref() == Some("p3"))
                     && fresh
                     && renamed
                     && deleted
                     && transitions
                     && chained
-                    && audited,
+                    && audited
+                    && merged
+                    && judged,
                 || {
                     format!(
-                        "first observation {flagged:?}; stale since {since:?}; {elsewhere} change(s) for another tenant or subject; seen again {again:?} → {seen:?}; cleared {cleared:?}; after the rename {lexer_refs:?}; after the deletion {other_refs:?}; a second file of a stale record reported with its state before: {transitions} ({other_file:?}); renames b→c then a→b in one batch: {} → {chain_refs:?}; the observation's audit event written: {audited}",
+                        "first observation {flagged:?}; stale since {since:?}; {elsewhere} change(s) for another tenant or subject; seen again {again:?} → {seen:?}; cleared {cleared:?}; after the rename {lexer_refs:?}; after the deletion {other_refs:?}; a second file of a stale record reported with its state before: {transitions} ({other_file:?}); renames b→c then a→b in one batch: {} → {chain_refs:?}; the observation's audit event written: {audited}; a stale reference merged away by a rename clears its record: {merged} ({dropped:?} → {merge_refs:?}); revisions judged when stored: own {own_after:?}, inherited {taken_after:?}",
                         renamed_chain.as_ref().map(|c| c.len().to_string()).unwrap_or_else(|e| format!("{e:#}"))
                     )
                 },
@@ -583,7 +633,7 @@ pub async fn run_store_kit(store: Arc<dyn Store>) -> Report {
     );
     r.outcome(
         "code_refs_revalidate_and_travel",
-        "revalidation gives a reference its new hash and clears the mark; references are read by path; staleness marks are exported and imported with their record",
+        "revalidation gives a reference its new hash and clears the mark, unless the file was seen with another hash than the one confirmed; references are read by path; staleness marks are exported and imported with their record",
         async {
             let id = linked("The router matches paths through a radix tree.", vec![CodeRef::new("src/route.rs", "r1"), CodeRef::new("src/tree.rs", "n1")]).await?;
             store.code_refs_observe(t, repo, &[FileState::present("src/route.rs", "r2"), FileState::present("src/tree.rs", "n2")], at, &memhouse_core::traits::no_audit).await?;
@@ -600,18 +650,25 @@ pub async fn run_store_kit(store: Arc<dyn Store>) -> Report {
             let imported = store.get(t, copy.id).await?.is_some_and(|m| m.stale_since == Some(at)) && store.representations(t, copy.id).await?.1 == copy.code_refs;
             // One reference by a given hash: the record stays stale for the other. Then the rest
             // by the hash last seen.
-            let part = store.code_refs_revalidate(t, id, Some(&[CodeRef::new("src/route.rs", "r9")]), &memhouse_core::traits::no_revalidation_audit).await?.unwrap_or_default();
+            let part = store.code_refs_revalidate(t, id, Some(&[CodeRef::new("src/route.rs", "r2")]), &memhouse_core::traits::no_revalidation_audit).await?.unwrap_or_default();
             let still = stale_of(id).await?.is_some();
+            // A confirmation does not hide what was seen after the content it confirms: the
+            // file is seen at `r3`, then confirmed at `r2` by a caller that read it before.
+            // The reference stays stale, with the hash seen; confirmed at `r3`, it is fresh.
+            store.code_refs_observe(t, repo, &[FileState::present("src/route.rs", "r3")], at, &memhouse_core::traits::no_audit).await?;
+            let late = store.code_refs_revalidate(t, id, Some(&[CodeRef::new("src/route.rs", "r2")]), &memhouse_core::traits::no_revalidation_audit).await?.unwrap_or_default();
+            let kept = late.iter().any(|c| c.path == "src/route.rs" && c.blob_hash == "r2" && c.stale_since.is_some() && c.seen_hash.as_deref() == Some("r3"));
+            store.code_refs_revalidate(t, id, Some(&[CodeRef::new("src/route.rs", "r3")]), &memhouse_core::traits::no_revalidation_audit).await?;
             let all = store.code_refs_revalidate(t, id, None, &memhouse_core::traits::no_revalidation_audit).await?.unwrap_or_default();
             let done = stale_of(id).await?.is_none();
             let hashes = |refs: &[CodeRef]| refs.iter().map(|c| (c.path.clone(), c.blob_hash.clone(), c.stale_since.is_some())).collect::<Vec<_>>();
-            let expected_part = vec![("src/route.rs".to_string(), "r9".to_string(), false), ("src/tree.rs".to_string(), "n1".to_string(), true)];
-            let expected_all = vec![("src/route.rs".to_string(), "r9".to_string(), false), ("src/tree.rs".to_string(), "n2".to_string(), false)];
+            let expected_part = vec![("src/route.rs".to_string(), "r2".to_string(), false), ("src/tree.rs".to_string(), "n1".to_string(), true)];
+            let expected_all = vec![("src/route.rs".to_string(), "r3".to_string(), false), ("src/tree.rs".to_string(), "n2".to_string(), false)];
             let unknown = store.code_refs_revalidate(t, Uuid::now_v7(), None, &memhouse_core::traits::no_revalidation_audit).await?.is_none() && store.code_refs_revalidate("kit-someone-else", id, None, &memhouse_core::traits::no_revalidation_audit).await?.is_none();
             let foreign = store.code_refs_revalidate(t, id, Some(&[CodeRef::new("src/absent.rs", "x")]), &memhouse_core::traits::no_revalidation_audit).await.is_err();
-            Ok(unless(read && exported && imported && hashes(&part) == expected_part && still && hashes(&all) == expected_all && done && unknown && foreign, || {
+            Ok(unless(read && exported && imported && hashes(&part) == expected_part && still && kept && hashes(&all) == expected_all && done && unknown && foreign, || {
                 format!(
-                    "read by path: {read}; exported with marks: {exported}; imported with marks: {imported}; after one reference {:?} (still stale: {still}); after the rest {:?} (fresh: {done}); unknown record answered none: {unknown}; a path that is no reference refused: {foreign}",
+                    "read by path: {read}; exported with marks: {exported}; imported with marks: {imported}; after one reference {:?} (still stale: {still}); a hash seen after the confirmed one kept the reference stale: {kept} ({late:?}); after the rest {:?} (fresh: {done}); unknown record answered none: {unknown}; a path that is no reference refused: {foreign}",
                     hashes(&part),
                     hashes(&all)
                 )

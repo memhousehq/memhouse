@@ -393,19 +393,26 @@ pub async fn run_post_commit(api: &dyn Transport, repo: &Repo, subject: Option<&
 /// Report a commit's files (see [`run_post_commit`]).
 pub async fn report_commit(api: &dyn Transport, subject: &str, sha: &str, files: Vec<FileState>) -> anyhow::Result<String> {
     let (valid, refused): (Vec<FileState>, Vec<FileState>) = files.into_iter().partition(|f| memhouse_core::staleness::observed_files(std::slice::from_ref(f)).is_ok());
-    let (mut flagged, mut cleared) = (0, 0);
+    // Per memory, over all batches: whether it was stale before the first change reported
+    // for it and whether it is after the last. A memory one batch flags and a later one
+    // clears is neither.
+    let mut net: std::collections::BTreeMap<String, (bool, bool)> = Default::default();
     let mut failed: Vec<String> = vec![];
     let batches = changed_requests(subject, &format!("commit {sha}"), &valid);
     let n = batches.len();
     for (i, req) in batches.into_iter().enumerate() {
         match ask(api, "/v1/code/changed", &serde_json::to_value(&req)?).await {
             Ok(answer) => {
-                flagged += answer["flagged"].as_u64().unwrap_or(0);
-                cleared += answer["cleared"].as_u64().unwrap_or(0);
+                for c in answer["changes"].as_array().into_iter().flatten() {
+                    let (Some(id), was, is) = (c["id"].as_str(), c["was_stale"].as_bool().unwrap_or(false), c["stale"].as_bool().unwrap_or(false)) else { continue };
+                    net.entry(id.to_string()).and_modify(|e| e.1 = is).or_insert((was, is));
+                }
             }
             Err(e) => failed.push(format!("batch {} of {n} ({} files): {e:#}", i + 1, req.files.len())),
         }
     }
+    let flagged = net.values().filter(|(was, is)| !was && *is).count();
+    let cleared = net.values().filter(|(was, is)| *was && !is).count();
     let said = match (flagged, cleared) {
         (0, 0) => String::new(),
         _ => format!("memhouse: {flagged} memories about files of this commit need revalidation, {cleared} are current again ({subject})"),
@@ -466,7 +473,15 @@ mod tests {
         async fn post(&self, _path: &str, body: &Value) -> anyhow::Result<(u16, Value)> {
             let mut seen = self.0.lock().unwrap();
             seen.push(body["files"].as_array().map(|f| f.len()).unwrap_or(0));
-            Ok(if seen.len() == 2 { (503, json!({"error": "try again"})) } else { (200, json!({"flagged": 1, "cleared": 0, "changes": []})) })
+            // The first batch flags two memories; the third clears one of them again.
+            Ok(match seen.len() {
+                2 => (503, json!({"error": "try again"})),
+                3 => (200, json!({"flagged": 0, "cleared": 1, "changes": [{"id": "m1", "path": "a.rs", "cleared": true, "stale": false, "was_stale": true}]})),
+                _ => (
+                    200,
+                    json!({"flagged": 2, "cleared": 0, "changes": [{"id": "m1", "path": "a.rs", "flagged": true, "stale": true}, {"id": "m2", "path": "b.rs", "flagged": true, "stale": true}]}),
+                ),
+            })
         }
     }
 
@@ -479,12 +494,14 @@ mod tests {
         let e = report_commit(&api, "repo:big", "abc123", files).await.unwrap_err().to_string();
         assert_eq!(*api.0.lock().unwrap(), vec![MAX_FILES, MAX_FILES, 5], "every batch is attempted, without the refused file");
         assert!(
-            e.contains("commit abc123") && e.contains("batch 2 of 3") && e.contains("503") && e.contains("1 file(s) the API does not accept") && e.contains("2 memories"),
+            e.contains("commit abc123") && e.contains("batch 2 of 3") && e.contains("503") && e.contains("1 file(s) the API does not accept")
+                // Net over the batches: one memory flagged and cleared again is neither.
+                && e.contains("1 memories about files of this commit need revalidation, 0 are current again"),
             "{e}"
         );
         // Nothing refused and nothing failed: the plain summary.
         let ok = report_commit(&SecondFails(Default::default()), "repo:big", "abc123", vec![FileState::present("a.rs", "h")]).await.unwrap();
-        assert!(ok.contains("1 memories"), "{ok}");
+        assert!(ok.contains("2 memories"), "{ok}");
     }
 
     #[test]

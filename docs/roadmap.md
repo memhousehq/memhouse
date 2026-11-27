@@ -2081,6 +2081,52 @@ against the code; what changed:
 - Governance: 79 checks; the new cases are scenarios of `stale_until_revalidated` (25),
   `file_touched_access` (14), `procedural_promotion` (22) and `hooks_only_call_api` (9).
 
+**Review fixes, second round (2026-11-27, pull request 39):** the findings on the first
+round's commit, each checked against the code; what changed:
+
+- **A revision's references are judged where it is stored.** The stores read the replaced
+  version's references in the transaction that inserts the revision
+  (`staleness::successor_refs`): a revision that names none takes them as they are then (the
+  hash last seen, the path after a rename, a restored file as restored); one that names its
+  own starts stale where the predecessor's reference to that path is stale with another
+  hash. On Postgres an observation and such an insert take the subject's lock, so neither
+  runs inside the other. A proposed revision is judged the same way and is observed while it
+  waits, so a reviewer commits it as stale as its files say. This replaces the first round's
+  rule, which read the predecessor outside the transaction. Not closed, because no state
+  records it: a hash or a path a revision names itself that its predecessor never saw is
+  taken as stated, also when the file was reported back at its old content or renamed after
+  the writer read it ([coding.md](coding.md#limits)).
+- **Revalidation with a hash** no longer clears a mismatch seen with another hash: the
+  reference takes the confirmed hash and stays stale, with the hash seen, until the file is
+  seen with the confirmed content or that hash is confirmed.
+- **Every write of an observation has a change.** A stale reference merged away by a rename
+  is reported (and, when it was the memory's last stale one, as cleared: audited, and the
+  session cache drops its copy). Another hash seen on a reference that is stale already is
+  audited as `memory.code_seen`; it is no transition and in no answer.
+- **A read-only caller's reports** are applied in order to a copy of the references, like a
+  recorded observation: a file changed and changed back in one request is as it was.
+- **References stored before schema 10** with another spelling of their path (`./src//a.rs`)
+  are put in canonical form by the upgrade to version 10, in both stores; of two rows of one
+  record for one file the canonical one is kept.
+- **Promotion.** A proposal marked as a signal and as a correction is counted as a
+  correction. The held correction is looked up among corrections (`Held.counted`, filtered
+  in the store before the limit), so nearer ordinary signals cannot hide it.
+- **Task-matched recall.** The refill after dropping off-task procedures searches all the
+  requested kinds, further down (four times the limit and sixteen more), and holds the
+  procedures it finds to the same test: a matching procedure ranked below one that does not
+  match is returned.
+- **Hooks.** A hook group is ours only when every command in it is one plain MemHouse file
+  hook; a command chained with one of the user's is left alone (and a quoted program with
+  letters outside ASCII no longer panics the parser). The post-commit summary counts each
+  memory once per commit, by its state before the first batch and after the last.
+- **Descriptions.** The changelog and the guide say the hook prefers git's hash and falls
+  back to hashing the file as read; the `revalidate` tool says when it fails without
+  `code_refs` and what to do.
+- **Still not changed:** the order of a late commit report against a newer edit report (first
+  round).
+- Governance: 79 checks, store kit 19; new cases are scenarios of the existing checks and of
+  the store kit's observe and revalidate checks, and one in `schema_upgrade`.
+
 #### G20 — Memory browser v2 and admin console
 
 - [ ] **Done**

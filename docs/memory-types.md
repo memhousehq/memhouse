@@ -97,6 +97,8 @@ What bounds it:
   times promotes it. A deployment that does not accept that sets the key to `0`.
 - **A plan or a guess is not a correction.** A write the statement gate reads as a plan or as
   speculation waits for its reviewer whatever mark it carries; repeating it commits nothing.
+- **A correction that is also marked as an inferred signal** (`"signal": true`) is counted as
+  a correction.
 - **Audited.** Each counted repeat writes `memory.signal`, and the promotion `memory.admit`,
   with `reason` (`repeated_correction: …`), `corrections` (the count) and `threshold` in the
   detail. The injection screen and redaction apply to every one of these writes.
@@ -118,7 +120,10 @@ found is kept when one of these holds, and left out otherwise:
 
 The rule is deterministic and asks no model. A procedure that was left out is listed in the
 recall's [explanation](api.md#get-v1recallsidexplanation-why-a-recall-returned-what-it-did)
-with the reason `task`. `as_of` recalls are not filtered this way. A policy that sets another
+with the reason `task`. The places such procedures took are filled from what is ranked below
+them, a matching procedure included: one more search, four times the first one's limit and
+sixteen further, so a match ranked below that many others is still missed. `as_of` recalls
+are not filtered this way. A policy that sets another
 `retrieval` for procedural memory can't be written: the method is fixed per type.
 
 The limit: a procedure worded quite differently from the question about it ("how do I ship

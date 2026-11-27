@@ -80,10 +80,10 @@ curl -s $MH/v1/remember -H "authorization: Bearer $KEY" -H 'content-type: applic
 
 A path is relative to the repository root, with `/` separators. The hash is the **git blob
 hash** of the file's content, what `git hash-object <file>` prints, also for a file that is
-not committed yet. The file hooks ask git for it when git is installed, so that the hash is
+not committed yet. The file hooks prefer git's own answer, so that the hash is
 the one a commit of the file records (git may store other bytes than the working tree holds:
-line endings under `core.autocrlf`, clean filters such as Git LFS). Without a git binary they
-compute it themselves (`blob <length>\0` plus the bytes on disk, SHA-1, or SHA-256 in a
+line endings under `core.autocrlf`, clean filters such as Git LFS). Without a git binary, or
+when git cannot hash the file, they fall back to hashing the file as read (`blob <length>\0` plus the bytes on disk, SHA-1, or SHA-256 in a
 repository created with `--object-format=sha256`), which is the same hash wherever git stores
 the file as it is. The server never reads your files: it compares the hashes it is given.
 
@@ -111,7 +111,9 @@ same two routes ([`POST /v1/code/touched`](api.md#post-v1codetouched-memories-li
 job after a merge, an editor plugin.
 
 Every memory that goes stale, stops being stale or follows a rename gets an audit event
-(`memory.stale`, `memory.fresh`, `memory.code_moved`) with the actor and what was reported.
+(`memory.stale`, `memory.fresh`, `memory.code_moved`) with the actor and what was reported;
+another hash seen of a file whose memory is stale already is audited too
+(`memory.code_seen`), since a revalidation may take it.
 
 ## Revalidation
 
@@ -133,7 +135,11 @@ curl -s $MH/v1/code/revalidate -H "authorization: Bearer $KEY" -H 'content-type:
 Without `code_refs`, each stale reference takes the hash its file was **last seen** with, which
 is the file you checked only if nothing changed it since the hook reported it. To be exact,
 pass `code_refs` with the hash of each file as you checked it (`git hash-object <file>`): only
-those references are revalidated, and the memory returns to recall once none is stale. A memory
+those references are revalidated, and the memory returns to recall once none is stale. A
+confirmation does not hide a change it did not look at: if the file was seen with another hash
+than the one you pass, the reference takes your hash and **stays stale** (the answer says
+`stale`, and the reference shows the hash seen) until the file is seen with the confirmed
+content or you confirm what was seen. A memory
 about a **deleted** file has nothing to be checked against: revalidation answers `400`, and the
 memory is revised with the file it is about now, or forgotten. Revalidation needs
 `memory:write` and sight of the memory, and is audited as `memory.revalidate` with the old and
@@ -296,7 +302,8 @@ words are added.
 - **Staleness is what MemHouse is told.** A file changed where no hook runs (another machine
   without the post-commit hook, an editor outside the harness) is noticed when the file is
   next opened through a hook or one of its commits is reported, not before.
-- **Without a git binary the hash is of the file's bytes on disk.** Where git stores other
+- **Without git's answer the hash is of the file's bytes on disk** (no git binary, or git
+  could not hash the file). Where git stores other
   bytes than the working tree holds (line-ending conversion, clean filters), that hash differs
   from the blob hash a commit records, and memories about such files would be flagged after
   every commit. With git installed the file hooks ask git, and the two agree.
@@ -304,12 +311,23 @@ words are added.
   commit and that commit's post-commit report, and the file hook's report of the edit arrives
   first, the late commit report (which carries the committed content) can clear the flag the
   edit set. The next time the file is opened or edited through a hook it is flagged again.
-- **A revision is judged against the content its file was last seen with.** A revision whose
-  `code_refs` name another hash than the last one reported for the file starts stale, until a
-  hook reports the file with that hash (or it is revalidated).
-- **Hook groups are recognised by their program.** `connect --hooks` replaces the groups whose
-  commands run a binary called `memhouse` with `hook file-opened` or `hook file-edited`, and
-  leaves every other group alone, also one of another program with the same words.
+- **A revision is judged when it is stored, against what its predecessor's files were seen
+  with.** A revision that names no `code_refs` takes its predecessor's as they are at that
+  moment (the hash last seen, the path after a rename). One that names its own starts stale
+  where the predecessor's reference to the same path is stale with another hash than the
+  revision names. What MemHouse cannot know is not judged: a hash or a path the revision
+  names that its predecessor never saw is taken as the writer's statement, also when the
+  file was reported back at its old content, or renamed, after the writer read it. The next
+  report of the file settles it. A proposed revision is judged the same way when it is
+  stored, and follows the reports of its files while it waits for its reviewer.
+- **Hook groups are recognised as a whole.** `connect --hooks` replaces a group only when
+  every command in it is one plain MemHouse file hook: a binary called `memhouse` running
+  `hook file-opened` or `hook file-edited` with options, and nothing else. A group of another
+  program with the same words, or one where the hook is chained with a command of yours
+  (`... && ./lint.sh`), is left as it is, and the new group is added beside it: remove the
+  old one yourself.
+- **The post-commit summary is per commit.** A memory flagged by one part of a large commit
+  and cleared by another is counted as neither.
 - **Any writer can report a hash.** A key with `memory:write` in the repository's subject can
   hold a memory back by reporting another hash, or bring a stale one back by reporting the
   stored hash or revalidating it. An agent's key has that permission (it needs it to propose
