@@ -39,6 +39,7 @@ memhouse doctor          # shows which config file was loaded and checks every p
 - [`[advisor]`](#advisor): the profile advisor's limits
 - [`[access]`](#access): admission of agent proposals, token lifetime, labels per role
 - [`[telemetry]`](#telemetry): OTLP trace export, recall explanation retention
+- [`[siem]`](#siem): export of audit events to a SIEM
 - [Environment variables](#environment-variables)
 - [Templates](#templates)
 - [Recipes](#recipes)
@@ -133,6 +134,11 @@ denied_labels = []
 audit_reads = false
 episodic_retention_days = 0          # 0 = keep forever
 max_content_chars = 20000
+actions = {}                         # per category: "redact" (default), "mask" or "reject"
+untrusted_sources = []               # source patterns whose writes wait for a reviewer
+audit_anchor_path = ""               # a file anchors of the audit head are appended to
+audit_anchor_secs = 3600
+restore_guard = true
 
 [server]
 bind = "127.0.0.1:7077"
@@ -162,6 +168,8 @@ lite_max_writes_per_hour = 0         # 0 = reported, not judged
 | `url` | `postgres://memhouse:memhouse@127.0.0.1:54329/memhouse` | Postgres 16+ with the `vector` extension available (`memhouse up` generates a random password), or `sqlite:/path/to/memhouse.db` for the [Lite profile](lite.md): one SQLite file, which `memhouse up --lite` sets up. The file's directory must belong to the user and be closed to others. |
 | `max_connections` | 16 | Pool size per process. Each enrichment worker uses one connection at a time. |
 | `container` | none | Name of the Docker container `memhouse up` manages; `memhouse down` and `doctor` use it. |
+| `row_level_security` | false | Postgres: policies on every memory table, keyed on the tenant and subject the service sets for each session, as a second line behind the service's own filters (TR-DB-03). A direct connection without those settings reads nothing. See [operations.md](operations.md#row-level-security) before turning it on: it changes what a `psql` session of the service's role sees. |
+| `episodic_partitions` | false | Postgres: keep episodic memory in monthly partitions, so retention drops a partition instead of deleting its rows (TR-DB-04). Turning it on converts the memory table at the next start, in place and without moving a row; it is not converted back. See [operations.md](operations.md#monthly-partitions-for-episodic-memory). |
 
 The schema is created and migrated on start-up (`CREATE … IF NOT EXISTS`), so there is no
 separate migrate step. The database user needs `CREATE` rights on first start, or a DBA can run
@@ -492,8 +500,13 @@ reverse.
 | `quarantine_injection` | true | instruction-like content is stored as `quarantined` and never recalled |
 | `denied_labels` | `[]` | records carrying these labels are never recalled. Labels can only be set through `memhouse import` today; the write API doesn't take them yet. |
 | `audit_reads` | false | write a `memory.recall` audit event for every recall |
-| `episodic_retention_days` | 0 | purge conversation rounds older than this many days, with the facts and caches derived from them (0 = keep) |
+| `episodic_retention_days` | 0 | purge conversation rounds older than this many days, with the facts and caches derived from them (0 = keep). The built-in default is to keep: an upgrade never starts deleting stored conversations by itself ([the decision](governance.md#retention)). Retention per type and per scope is set in a [policy](policy.md#retention-per-type-and-scope). |
 | `max_content_chars` | 20000 | longer `remember` content is rejected; longer ingest rounds are truncated |
+| `actions` | `{}` | what happens to a match of a category in `redact`, by category: `redact` (the default: `[REDACTED:card]`), `mask` (`[MASKED:card:1111]`, the last four characters; for `card`, `ssn`, `iban` and `phone`) or `reject` (the write is refused with `invalid_request`). `actions = { card = "mask", ssn = "reject" }`. `secret` is never masked. A policy may make an action stricter (mask < redact < reject), never looser. |
+| `untrusted_sources` | `[]` | source labels that are not trusted: a write whose `source` matches a pattern (`*` matches any run of characters, as in `"web:*"`) is held as a candidate until a reviewer decides, whatever its type's gate would do (GOV-10). `memhouse forget --untrusted '*'` purges them. A policy may add patterns, never remove one. |
+| `audit_anchor_path` | `""` (off) | a file `memhouse serve` appends an anchor of the audit head to, one JSON line each (GOV-12). Put it where the database's administrators cannot rewrite it. `memhouse audit anchor` takes one on demand. |
+| `audit_anchor_secs` | 3600 | seconds between two anchors written to `audit_anchor_path` (at least 60) |
+| `restore_guard` | true | `memhouse serve` refuses a database that is older than the one this installation last served, until `memhouse restore` has re-applied the deletion ledger (TR-WF-03). The last state seen is kept under `MEMHOUSE_HOME/state/`. |
 
 ## `[server]`
 
@@ -560,6 +573,21 @@ and IBAN redaction, the injection screen and the audit log are all on (PROF-12).
 
 See [operations.md](operations.md#traces-metrics-and-recall-explanations) for the spans, the
 metrics and setting up a backend.
+
+## `[siem]`
+
+`memhouse serve` sends every audit event to a SIEM within seconds of its being written
+(GOV-15): as CEF over syslog, as OTLP logs, or both. Events hold identifiers, counts and hashes,
+never memory content. See [operations.md](operations.md#siem-export) for the formats and what
+happens when a receiver is down.
+
+| Key | Default | Notes |
+|---|---|---|
+| `syslog` | `""` (off) | `tcp://host:port` or `udp://host:port`: one RFC 5424 message per event, carrying CEF |
+| `otlp_endpoint` | `""` (off) | the base URL of an OTLP/HTTP collector, e.g. `http://collector:4318`; events are posted to its `/v1/logs` as JSON |
+| `otlp_headers_env` | `{}` | headers for the OTLP endpoint, by header name, each naming the environment variable that holds its value (`authorization = "SIEM_TOKEN"`); the values are never in the file |
+| `interval_secs` | 5 | seconds between two reads of the audit log (1 to 30); an event's delay is at most this plus the time to send a batch |
+| `batch` | 500 | events sent per batch (1 to 5000) |
 
 ## Environment variables
 

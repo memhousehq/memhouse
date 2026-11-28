@@ -29,6 +29,42 @@ pub struct Config {
     pub language: LanguageConfig,
     /// The profile advisor (PROF-11).
     pub advisor: AdvisorConfig,
+    /// Export of audit events to a SIEM (GOV-15).
+    pub siem: SiemConfig,
+}
+
+/// SIEM export (GOV-15): `memhouse serve` sends every audit event, in order, to a syslog
+/// receiver as CEF and/or to an OpenTelemetry collector as OTLP logs, within `interval_secs`
+/// of its being written. Events hold identifiers and hashes, never memory content (PR-3).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SiemConfig {
+    /// Where CEF messages go, framed as RFC 5424 syslog: `tcp://host:port` or `udp://host:port`.
+    /// Empty: no syslog export.
+    pub syslog: String,
+    /// The base URL of an OTLP/HTTP collector (`http://collector:4318`); events are posted to
+    /// its `/v1/logs` as JSON. Empty: no OTLP export.
+    pub otlp_endpoint: String,
+    /// Environment variables holding header values for the OTLP endpoint, by header name
+    /// (`authorization = "SIEM_TOKEN"`). The values are never in the file.
+    pub otlp_headers_env: std::collections::BTreeMap<String, String>,
+    /// Seconds between two reads of the audit log (1 to 30). The export delay of an event is
+    /// at most this plus the time to send a batch.
+    pub interval_secs: u64,
+    /// Events sent per batch (1 to 5000).
+    pub batch: usize,
+}
+
+impl Default for SiemConfig {
+    fn default() -> Self {
+        SiemConfig { syslog: String::new(), otlp_endpoint: String::new(), otlp_headers_env: Default::default(), interval_secs: 5, batch: 500 }
+    }
+}
+
+impl SiemConfig {
+    pub fn enabled(&self) -> bool {
+        !self.syslog.trim().is_empty() || !self.otlp_endpoint.trim().is_empty()
+    }
 }
 
 /// Languages (G36): which language packs the server reads statements, questions and injection
@@ -250,11 +286,27 @@ pub struct DatabaseConfig {
     pub max_connections: u32,
     /// Name of the Docker container managed by `memhouse up` (if any).
     pub container: Option<String>,
+    /// Postgres: row-level security on every memory table as a second line behind the
+    /// service's own tenant and subject filters (TR-DB-03). The service sets the session
+    /// settings the policies read; a direct connection without them reads nothing. Off by
+    /// default: turning it on changes what a direct `psql` session of the service's role sees
+    /// (`docs/operations.md`, "Row-level security").
+    pub row_level_security: bool,
+    /// Postgres: keep episodic memory in monthly partitions, so retention drops a partition
+    /// instead of deleting its rows (TR-DB-04). Turning it on converts the memory table at the
+    /// next start, in place and without moving a row; it is not converted back. Off by default.
+    pub episodic_partitions: bool,
 }
 
 impl Default for DatabaseConfig {
     fn default() -> Self {
-        DatabaseConfig { url: "postgres://memhouse:memhouse@127.0.0.1:54329/memhouse".into(), max_connections: 16, container: None }
+        DatabaseConfig {
+            url: "postgres://memhouse:memhouse@127.0.0.1:54329/memhouse".into(),
+            max_connections: 16,
+            container: None,
+            row_level_security: false,
+            episodic_partitions: false,
+        }
     }
 }
 
@@ -651,9 +703,78 @@ pub struct GovernanceConfig {
     pub denied_labels: Vec<String>,
     /// Write an audit event for every recall, not only for writes and deletions.
     pub audit_reads: bool,
-    /// Days after which episodic memory is purged (0 = keep).
+    /// Days after which episodic memory is purged (0 = keep). The built-in default is to keep
+    /// (decided in G22): an upgrade never starts deleting stored conversations by itself.
     pub episodic_retention_days: u32,
     pub max_content_chars: usize,
+    /// What happens to a match of a category in `redact` (GOV-05): `redact` (the default:
+    /// replaced by `[REDACTED:<category>]`), `mask` (replaced by `[MASKED:<category>:<last 4>]`;
+    /// for `card`, `ssn`, `iban` and `phone`) or `reject` (the write is refused). By category:
+    /// `actions = { card = "mask", ssn = "reject" }`. `secret` is never masked.
+    pub actions: std::collections::BTreeMap<String, RedactAction>,
+    /// Source labels that are not trusted (GOV-10): a write whose `source` matches one of these
+    /// patterns (`*` matches any run of characters) is held as a candidate until a reviewer
+    /// decides, whatever its type's gate would do. Empty: every source is treated alike.
+    pub untrusted_sources: Vec<String>,
+    /// A file `memhouse serve` appends an anchor of the audit head to (GOV-12), every
+    /// `audit_anchor_secs`: one JSON line per anchor. Put it on storage the database's
+    /// administrators cannot rewrite. Empty: anchors are taken by `memhouse audit anchor` only.
+    pub audit_anchor_path: String,
+    /// Seconds between two anchors written to `audit_anchor_path` (at least 60).
+    pub audit_anchor_secs: u64,
+    /// Refuse to serve a database that is older than the one this installation last served
+    /// (it was restored from a backup) until `memhouse restore` has re-applied the deletion
+    /// ledger (TR-WF-03). The last state seen is kept under `MEMHOUSE_HOME/state/`.
+    pub restore_guard: bool,
+}
+
+/// What the write gate does with a match of a redaction category (GOV-05). In order of
+/// strictness: a policy may raise a category's action, never lower it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RedactAction {
+    Mask,
+    Redact,
+    Reject,
+}
+
+impl RedactAction {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            RedactAction::Mask => "mask",
+            RedactAction::Redact => "redact",
+            RedactAction::Reject => "reject",
+        }
+    }
+}
+
+/// The categories whose matches can be masked: those that end in digits a person recognises
+/// their own value by.
+pub const MASKABLE: [&str; 4] = ["card", "ssn", "iban", "phone"];
+
+/// Whether `source` matches an untrusted-source pattern (`*` matches any run of characters).
+pub fn source_matches(pattern: &str, source: &str) -> bool {
+    let parts: Vec<&str> = pattern.split('*').collect();
+    if parts.len() == 1 {
+        return pattern == source;
+    }
+    let mut rest = source;
+    for (i, part) in parts.iter().enumerate() {
+        if i == 0 {
+            match rest.strip_prefix(part) {
+                Some(r) => rest = r,
+                None => return false,
+            }
+        } else if i == parts.len() - 1 {
+            return rest.ends_with(part);
+        } else {
+            match rest.find(part) {
+                Some(at) => rest = &rest[at + part.len()..],
+                None => return false,
+            }
+        }
+    }
+    true
 }
 
 impl Default for GovernanceConfig {
@@ -665,6 +786,11 @@ impl Default for GovernanceConfig {
             audit_reads: false,
             episodic_retention_days: 0,
             max_content_chars: 20_000,
+            actions: Default::default(),
+            untrusted_sources: vec![],
+            audit_anchor_path: String::new(),
+            audit_anchor_secs: 3600,
+            restore_guard: true,
         }
     }
 }
@@ -787,6 +913,44 @@ impl Config {
         if self.access.token_ttl_secs == 0 || self.access.token_ttl_secs > 3600 {
             anyhow::bail!("access.token_ttl_secs must be between 1 and 3600 (agent tokens are short-lived)");
         }
+        for (category, action) in &self.governance.actions {
+            if !crate::gate::CATEGORIES.contains(&category.as_str()) {
+                anyhow::bail!("governance.actions names {category:?}, which is not a redaction category (known: {})", crate::gate::CATEGORIES.join(", "));
+            }
+            if *action == RedactAction::Mask && !MASKABLE.contains(&category.as_str()) {
+                anyhow::bail!(
+                    "governance.actions: {category:?} can't be masked (only {}); a masked secret would still show part of the credential (security baseline)",
+                    MASKABLE.join(", ")
+                );
+            }
+        }
+        if self.governance.untrusted_sources.iter().any(|p| p.trim().is_empty()) {
+            anyhow::bail!("governance.untrusted_sources holds an empty pattern, which would match no source");
+        }
+        if !self.governance.audit_anchor_path.is_empty() && self.governance.audit_anchor_secs < 60 {
+            anyhow::bail!("governance.audit_anchor_secs must be at least 60");
+        }
+        if self.siem.enabled() {
+            if !(1..=30).contains(&self.siem.interval_secs) {
+                anyhow::bail!("siem.interval_secs must be between 1 and 30 (audit events reach the SIEM within 60 seconds, GOV-15)");
+            }
+            if !(1..=5000).contains(&self.siem.batch) {
+                anyhow::bail!("siem.batch must be between 1 and 5000");
+            }
+            let s = self.siem.syslog.trim();
+            if !s.is_empty() && !(s.starts_with("tcp://") || s.starts_with("udp://")) {
+                anyhow::bail!("siem.syslog must be tcp://host:port or udp://host:port");
+            }
+            let o = self.siem.otlp_endpoint.trim();
+            if !o.is_empty() && !(o.starts_with("http://") || o.starts_with("https://")) {
+                anyhow::bail!("siem.otlp_endpoint must be an http:// or https:// URL");
+            }
+            // The targets are named in logs, in the export's status and in the evidence
+            // bundle: a credential has no place in them (headers come from the environment).
+            if o.contains('@') || o.contains('?') || o.contains('#') || s.contains('@') {
+                anyhow::bail!("siem.otlp_endpoint and siem.syslog take a scheme, a host, a port and (for OTLP) a path: no user, password, query or fragment. Give credentials as headers in siem.otlp_headers_env");
+            }
+        }
         Ok(())
     }
 
@@ -865,6 +1029,55 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// GOV-10: untrusted-source patterns match whole labels, with `*` for any run of characters.
+    #[test]
+    fn source_patterns_match_whole_labels() {
+        for (pattern, source, matches) in [
+            ("web:*", "web:forum", true),
+            ("web:*", "web:", true),
+            ("web:*", "intranet-web:forum", false),
+            ("*-import", "crm-import", true),
+            ("*-import", "crm-import-7", false),
+            ("import:*:raw", "import:crm:raw", true),
+            ("import:*:raw", "import:raw", false),
+            ("forum", "forum", true),
+            ("forum", "forum2", false),
+            ("*", "anything", true),
+        ] {
+            assert_eq!(source_matches(pattern, source), matches, "{pattern:?} against {source:?}");
+        }
+    }
+
+    /// GOV-05 and GOV-15: actions and the SIEM settings are checked at start.
+    #[test]
+    fn governance_two_settings_are_checked() {
+        let mut cfg = Config::default();
+        cfg.governance.actions.insert("card".into(), RedactAction::Mask);
+        cfg.governance.actions.insert("ssn".into(), RedactAction::Reject);
+        cfg.check_floor().unwrap();
+        for bad in [("secret", RedactAction::Mask), ("email", RedactAction::Mask), ("passport", RedactAction::Redact)] {
+            let mut c = cfg.clone();
+            c.governance.actions.insert(bad.0.into(), bad.1);
+            assert!(c.check_floor().is_err(), "{bad:?}");
+        }
+        let mut siem = cfg.clone();
+        siem.siem.syslog = "siem.internal:514".into();
+        assert!(siem.check_floor().is_err(), "a syslog target names its transport");
+        siem.siem.syslog = "tcp://siem.internal:514".into();
+        siem.check_floor().unwrap();
+        for bad in ["https://user:pw@collector:4318", "https://collector:4318/?token=x"] {
+            let mut c = siem.clone();
+            c.siem.otlp_endpoint = bad.into(); // secret-scan: allow (fake fixture)
+            assert!(c.check_floor().is_err(), "{bad}");
+        }
+        siem.siem.interval_secs = 120;
+        assert!(siem.check_floor().is_err(), "an interval past the 60-second target");
+        // The defaults: nothing purged, nothing exported, nothing untrusted.
+        let d = Config::default();
+        assert_eq!(d.governance.episodic_retention_days, 0);
+        assert!(!d.siem.enabled() && d.governance.untrusted_sources.is_empty() && !d.database.row_level_security && !d.database.episodic_partitions);
+    }
 
     /// A model table that sets one key keeps its tier's other defaults.
     #[test]

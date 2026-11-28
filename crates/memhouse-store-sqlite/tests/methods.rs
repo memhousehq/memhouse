@@ -761,6 +761,23 @@ async fn policies_identities_grants_and_evaluations() {
     assert_eq!(s.recalls_delete(T, Some("ada"), None).await.unwrap(), 1);
     assert_eq!(s.recalls_delete(T, None, Some(5)).await.unwrap(), 1);
     assert_eq!(s.recalls_delete(T, None, None).await.unwrap(), 1);
+    // An explanation written after its subject was erased, of a recall made before the
+    // erasure, is not stored (the write is scheduled and may arrive late); one of a recall made
+    // well after it is. Another subject's is not affected.
+    let erased = "user:erased";
+    let late = RecallRecord { subject: erased.into(), ..recall(Some("ada"), Utc::now()) };
+    s.delete_subject(T, erased, "t", true).await.unwrap();
+    s.recall_put(&late).await.unwrap();
+    assert!(s.recall_get(T, late.recall_id).await.unwrap().is_none(), "an explanation written after the erasure of its subject");
+    let after = RecallRecord { subject: erased.into(), ..recall(Some("ada"), Utc::now() + Duration::seconds(30)) };
+    let other = RecallRecord { subject: "user:kept".into(), ..recall(Some("ada"), Utc::now()) };
+    s.recall_put(&after).await.unwrap();
+    s.recall_put(&other).await.unwrap();
+    assert!(s.recall_get(T, after.recall_id).await.unwrap().is_some() && s.recall_get(T, other.recall_id).await.unwrap().is_some());
+    // A dotted key and a value that JSON escapes are found in the audit log as they were written.
+    s.audit("t", "test.find", T, None, None, json!({ "a.b": "a\"b\nc" })).await.unwrap();
+    assert!(s.audit_find(T, "test.find", "a.b", "a\"b\nc").await.unwrap());
+    assert!(!s.audit_find(T, "test.find", "a.b", "a").await.unwrap() && !s.audit_find(T, "test.find", "a", "a\"b\nc").await.unwrap());
 
     // Links and idempotency keys: the first write wins.
     let link =

@@ -488,6 +488,21 @@ async fn call_legacy(c: &Caller, name: &str, args: &Value) -> anyhow::Result<(St
             let id = arg_str(args, "id").ok_or_else(|| anyhow::anyhow!("id is required"))?;
             let id = uuid::Uuid::parse_str(&id).map_err(|_| anyhow::anyhow!("id must be a memory id"))?;
             let ok = match c.forget(ForgetRequest { id: Some(id), ..Default::default() }).await {
+                // A record a legal hold keeps was not deleted: said so, not reported as gone.
+                Ok(r) if r.deleted == 0 && r.held > 0 => {
+                    return Ok((
+                        format!("Memory {id} is under a legal hold and was not deleted; it is deleted when the hold is released"),
+                        // `held` is a count in every answer that has it (here the record itself).
+                        json!({ "deleted": false, "held": r.held }),
+                    ));
+                }
+                // Deleted, but a hold keeps something derived or promoted from it: said too.
+                Ok(r) if r.held > 0 => {
+                    return Ok((
+                        format!("Deleted {id}; {} records derived or promoted from it are under a legal hold and are deleted when the hold is released", r.held),
+                        json!({ "deleted": true, "held": r.held }),
+                    ));
+                }
                 Ok(_) => true,
                 Err(e) if error::code_of(&e) == error::ErrorCode::NotFound => false,
                 Err(e) => return Err(e),

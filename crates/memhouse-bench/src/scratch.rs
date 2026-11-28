@@ -82,6 +82,15 @@ pub(crate) async fn open_store(url: &str, connections: u32, passage_prefix: &str
     })
 }
 
+/// `open_store` with what a deployment can turn on in its Postgres database (row-level
+/// security, monthly episodic partitions); a SQLite store has neither.
+pub(crate) async fn open_store_with(url: &str, connections: u32, options: memhouse_store_postgres::PgOptions) -> anyhow::Result<Arc<dyn Store>> {
+    Ok(match memhouse_server::sqlite_path(url) {
+        Some(path) => Arc::new(memhouse_store_sqlite::SqliteStore::open(&path, "")?),
+        None => Arc::new(memhouse_store_postgres::PgStore::connect_with(url, connections, "", options).await?.with_identity_recheck(std::time::Duration::ZERO)),
+    })
+}
+
 /// A fresh database next to the benchmark one, for checks that change a whole database.
 pub(crate) struct Scratch {
     pub(crate) url: String,
@@ -141,6 +150,39 @@ impl Scratch {
         match &self.place {
             Place::Sqlite { dir } => Some(format!("sqlite:{}", dir.join(format!("{name}.db")).display())),
             Place::Postgres { .. } => None,
+        }
+    }
+
+    /// A copy of this database as it is now, under another name: what a backup taken at this
+    /// moment restores to. Postgres copies the database as a template, for which nothing else
+    /// may be connected to it: the sessions of the checks' own pools are ended first (a pool
+    /// opens new ones when it is next used). SQLite takes a consistent snapshot of the file.
+    pub(crate) async fn copy(&self, suffix: &str) -> anyhow::Result<Scratch> {
+        match &self.place {
+            Place::Postgres { admin, db } => {
+                let copy = format!("{db}_{suffix}");
+                sqlx::raw_sql(sqlx::AssertSqlSafe(format!("DROP DATABASE IF EXISTS \"{copy}\" WITH (FORCE)"))).execute(admin).await?;
+                let mut made = Ok(());
+                // A pool may reconnect between the two statements: tried a few times.
+                for _ in 0..5 {
+                    sqlx::query("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()").bind(db).execute(admin).await?;
+                    made = sqlx::raw_sql(sqlx::AssertSqlSafe(format!("CREATE DATABASE \"{copy}\" TEMPLATE \"{db}\""))).execute(admin).await.map(|_| ());
+                    if made.is_ok() {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                }
+                made?;
+                let (head, tail) = self.url.rsplit_once('/').ok_or_else(|| anyhow::anyhow!("unexpected database url"))?;
+                let query = tail.split_once('?').map(|(_, q)| format!("?{q}")).unwrap_or_default();
+                Ok(Scratch { url: format!("{head}/{copy}{query}"), place: Place::Postgres { admin: admin.clone(), db: copy } })
+            }
+            Place::Sqlite { dir } => {
+                let to = std::env::temp_dir().join(format!("memhouse-gov-{suffix}-{}", Uuid::now_v7().simple()));
+                memhouse_store_sqlite::private_dir(&to)?;
+                memhouse_store_sqlite::SqliteStore::open(&dir.join("scratch.db"), "")?.snapshot_to(&to.join("scratch.db"))?;
+                Ok(Scratch { url: format!("sqlite:{}", to.join("scratch.db").display()), place: Place::Sqlite { dir: to } })
+            }
         }
     }
 

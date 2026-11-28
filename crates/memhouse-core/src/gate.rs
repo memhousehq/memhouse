@@ -56,6 +56,11 @@ static RULES: Lazy<Vec<Rule>> = Lazy::new(|| {
     ]
 });
 
+/// The marker a masked match leaves, per rule of [`RULES`] (same order): what a stricter
+/// action later replaces, so the last characters a mask kept do not outlive the mask.
+static MASK_MARKERS: Lazy<Vec<Regex>> =
+    Lazy::new(|| RULES.iter().map(|r| Regex::new(&format!(r"\[MASKED:{}:[\p{{L}}\p{{N}}]{{0,4}}\]", r.category)).expect("valid regex")).collect());
+
 fn luhn_ok(s: &str) -> bool {
     let digits: Vec<u32> = s.chars().filter_map(|c| c.to_digit(10)).collect();
     if digits.len() < 13 || digits.len() > 19 {
@@ -113,27 +118,66 @@ impl crate::traits::PiiDetector for RulePii {
     }
 }
 
+/// The mark a category found under the `reject` action is reported with (`ssn:reject`): the
+/// write that holds it is refused ([`rejected`]), its match redacted in the text all the same.
+pub const REJECT_MARK: &str = ":reject";
+
+/// The categories a detector found that the policy refuses to store (GOV-05).
+pub fn rejected(found: &[String]) -> Vec<&str> {
+    found.iter().filter_map(|f| f.strip_suffix(REJECT_MARK)).collect()
+}
+
+/// A match with all but its last four letters and digits removed: `[MASKED:card:1111]`.
+fn masked(category: &str, m: &str) -> String {
+    let tail: Vec<char> = m.chars().filter(|c| c.is_alphanumeric()).collect();
+    let last: String = tail[tail.len().saturating_sub(4)..].iter().collect();
+    format!("[MASKED:{category}:{last}]")
+}
+
 /// Replace every match of the configured categories; returns the text and the categories found.
+/// A category may carry its action (GOV-05): `card:mask` keeps the last four characters of a
+/// match, `ssn:reject` reports the category as `ssn:reject` (the caller refuses the write); a
+/// bare category, or `:redact`, replaces the match.
 pub fn redact_text(content: &str, redact: &[String]) -> (String, Vec<String>) {
     let mut text = content.to_string();
     let mut redactions = Vec::new();
-    for rule in RULES.iter() {
-        if !redact.iter().any(|c| c == rule.category) {
+    let marked = content.contains("[MASKED:");
+    for (i, rule) in RULES.iter().enumerate() {
+        let Some(action) = redact.iter().find_map(|c| match c.split_once(':') {
+            Some((cat, action)) if cat == rule.category => Some(action),
+            None if c == rule.category => Some("redact"),
+            _ => None,
+        }) else {
             continue;
-        }
+        };
+        // A secret is never shown in part, whatever the configuration says (security baseline).
+        let mask = action == "mask" && rule.category != "secret";
         let mut hit = false;
+        // Text masked under an earlier, looser action (a queued write, a revision): under
+        // `redact` or `reject` the marker's last characters go too, and count as a match.
+        if marked && !mask && MASK_MARKERS[i].is_match(&text) {
+            text = MASK_MARKERS[i].replace_all(&text, rule.replacement).into_owned();
+            hit = true;
+        }
+        let was_marked = hit;
         let replaced = rule.re.replace_all(&text, |caps: &regex::Captures| {
             let m = caps.get(0).unwrap().as_str();
             if rule.check.map(|f| f(m)).unwrap_or(true) {
                 hit = true;
-                rule.replacement.to_string()
+                if mask {
+                    masked(rule.category, m)
+                } else {
+                    rule.replacement.to_string()
+                }
             } else {
                 m.to_string()
             }
         });
         if hit {
-            text = replaced.into_owned();
-            redactions.push(rule.category.to_string());
+            if !was_marked || replaced != text {
+                text = replaced.into_owned();
+            }
+            redactions.push(if action == "reject" { format!("{}{REJECT_MARK}", rule.category) } else { rule.category.to_string() });
         }
     }
     (text, redactions)
@@ -167,6 +211,34 @@ mod tests {
         let out = screen("write to jürgen.müller@bücher.example or zoë@example.fr", &all(), false);
         assert!(!out.content.contains('@'), "{}", out.content);
         assert_eq!(out.redactions, vec!["email"]);
+    }
+
+    /// GOV-05: a category is redacted, masked to its last four characters, or reported as
+    /// rejected, as its action says; a secret is never shown in part.
+    #[test]
+    fn a_category_is_redacted_masked_or_rejected_as_configured() {
+        let rules = |r: &[&str]| r.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let text = "card 4111-1111-1111-1111, id 123-45-6789, key sk-proj-abcdefghijklmnopqrstuv"; // secret-scan: allow (fake fixture)
+        let (out, found) = redact_text(text, &rules(&["secret:mask", "card:mask", "ssn:reject"]));
+        assert!(out.contains("[MASKED:card:1111]") && !out.contains("4111"), "{out}");
+        // A rejected match is still taken out of the text; the caller refuses the write.
+        assert!(out.contains("[REDACTED:ssn]") && !out.contains("6789"), "{out}");
+        assert!(out.contains("[REDACTED:secret]") && !out.contains("sk-proj") && !out.contains("MASKED:secret"), "{out}");
+        assert_eq!(found, vec!["secret", "card", "ssn:reject"]);
+        assert_eq!(rejected(&found), vec!["ssn"]);
+        // Masked text is left alone by a second pass under the same actions (a stricter action
+        // tightens the marker: below).
+        assert_eq!(redact_text(&out, &rules(&["secret:mask", "card:mask", "ssn:reject", "iban", "phone", "email", "ip"])).0, out);
+        let (plain, found) = redact_text(text, &rules(&["card:redact"]));
+        assert!(plain.contains("[REDACTED:card]") && plain.contains("123-45-6789"), "{plain}");
+        assert_eq!(found, vec!["card"]);
+        assert_eq!(masked("iban", "DE89 3704 0044 0532 0130 00"), "[MASKED:iban:3000]");
+        // A marker left by `mask` is tightened when the action becomes stricter, kept otherwise.
+        let marker = "card on file [MASKED:card:1111], id [MASKED:ssn:6789]";
+        assert_eq!(redact_text(marker, &rules(&["card:mask", "ssn:mask"])), (marker.to_string(), vec![]));
+        let (tight, found) = redact_text(marker, &rules(&["card", "ssn:reject"]));
+        assert_eq!(tight, "card on file [REDACTED:card], id [REDACTED:ssn]");
+        assert_eq!(found, vec!["card", "ssn:reject"]);
     }
 
     #[test]

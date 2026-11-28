@@ -5,7 +5,7 @@ This is the data model every MemHouse store holds, independent of how a store la
 (TR-CORE-04). The Postgres store maps it to the tables at the end; the Lite store (G16) will map
 the same model to SQLite. Exports carry exactly this model ([Memory Format v2](memory-format.md)).
 
-Schema version **11** (`mh_meta.schema_version`). Version 1 to 10 databases upgrade in place on
+Schema version **12** (`mh_meta.schema_version`). Version 1 to 11 databases upgrade in place on
 start-up; see [Upgrading from v1](#upgrading-from-v1). Version 3 added the identity tables
 (principals, API keys, token signing keys), version 4 the recall explanations, version 5 the
 policy specs and their activations, version 6 the write pipeline's intake queue, version 7
@@ -19,7 +19,9 @@ paths of stored references in the one form they are matched in (`./src//a.rs` be
 On Postgres a trigger on `mh_code_ref` keeps new rows in that form too, so a version 9
 process still running during a rolling upgrade cannot store another spelling; a Lite file is
 opened by one build at a time, and an older build refuses a newer file. Version 11 added the
-[console sessions](#session): one new table, which is not memory and is not exported.
+[console sessions](#session): one new table, which is not memory and is not exported. Version
+12 added [legal holds, deletion requests and job runs](#legal-hold-deletion-request-job-run):
+three new tables, none of them memory.
 
 A stored path that has no such form is left as it is. With `\` read as `/`, that is a path
 with a `..` segment (`../x`, `src/../a.rs`), a path with nothing but empty and `.` segments
@@ -233,6 +235,36 @@ model T3).
   It is not exported and not migrated between profiles (`memhouse migrate`): after a
   migration, log in again.
 
+## Legal hold, deletion request, job run
+
+Added in version 12 (G22). None of them is memory: they hold identifiers, counts and hashes,
+never content, and none is exported in the Memory Format. Legal holds and deletion requests
+move with `memhouse migrate`; job runs do not (an unfinished run is simply run again).
+
+- **Legal hold** `{id, tenant, target_kind, target, reason, placed_by, placed_at, released_by,
+  released_at}`: while `released_at` is empty, every record the hold matches is exempt from
+  retention and deletion (GOV-09). `target_kind` is `subject`, `user`, `agent`, `source`,
+  `org`, `team`, `session` or `tenant`; a `user` hold matches a record's `provenance.user` or
+  `scope.user`, and so on, as the corresponding `forget` does.
+- **Deletion request** `{id, tenant, scope, value, actor, requested_at, status, completed_at,
+  deleted, held, executions, canaries, certificate}`: one per `forget`, from the request to its
+  completion certificate (TR-WF-01). `status` is `running`, `held` (a legal hold keeps records
+  back) or `completed`; a completed request is never changed. `canaries` are the ids and
+  cached-vector keys sampled before the deletion; `certificate` is the certificate as JSON.
+- **Job run** `{id, tenant, job, state, started_at, updated_at, finished_at}`: a durable run of
+  a background job (TR-WF-02). At most one unfinished run per tenant and job; `state` holds the
+  records counted per step and the steps whose audit event is written.
+
+Version 12 changes no column of a record. On Postgres it adds one nullable column to the
+memory table, `epart`: the month of an episodic record on a database whose memory table is
+partitioned by it ([monthly partitions](operations.md#monthly-partitions-for-episodic-memory)),
+empty everywhere else. It is the store's own and is not part of the logical record. The change
+is expand-only, but a version 11 build does not run on a version 12 database: like every
+build, it refuses a database whose stored schema version is newer than its own ("newer than
+this build") when it opens it. Upgrade in this order: stop or drain every process of the older
+build, start the new build (it brings the schema to version 12 when it opens the database),
+then start the rest on the new build. To go back, restore the backup taken before the upgrade.
+
 ## Postgres mapping
 
 | Logical | Postgres |
@@ -246,6 +278,10 @@ model T3).
 | Request key | `mh_request_key` |
 | Store metadata | `mh_meta`: `schema_version`, `embedder`, `embedding_dim`, `passage_prefix`, re-embedding state |
 | Not exported | `mh_embed_cache`, `mh_llm_cache`, `mh_enrich_job`, `mh_audit`, `mh_deletion_ledger` |
+| Legal holds, deletion requests, job runs (v12, not exported) | `mh_legal_hold`, `mh_deletion_request`, `mh_job_run` (a partial unique index keeps one unfinished run per tenant and job) |
+| Monthly partitions (v12, optional) | with `[database] episodic_partitions`: `mh_memory` partitioned by list on `epart`; `mh_memory_rest` (the table as it was: rows without a month) and `mh_memory_e<YYYYMM>` per month of episodic memory, each with its own primary key on `id`. The foreign keys of `mh_structured`, `mh_code_ref` and `mh_link` are replaced by the trigger `mh_memory_children`, which deletes them with their record |
+| Row-level security (v12, optional) | with `[database] row_level_security`: the policy `mh_isolation`, enabled and forced, on `mh_memory` and its partitions, `mh_structured`, `mh_code_ref`, `mh_link`, `mh_recall`, `mh_intake`, `mh_request_key`, `mh_enrich_job` (tenant and subject from the session settings `memhouse.tenant` and `memhouse.subject`) and on `mh_embed_cache` and `mh_llm_cache` (the service scope only); the function `mh_rls_service()` |
+| Small durable state (v12) | `mh_meta` keys `state.*`: the installation's id, the SIEM export's cursors and lease |
 | Recall explanations (v4, not exported) | `mh_recall` (id, tenant, subject, principal, acting user, time, the recall record as JSON); erased with the subject, tenant or user, purged after `explanation_retention_days` |
 | Policy specs (v5, not exported) | `mh_policy_spec` (tenant, version, spec as JSON, status `proposed` or `approved`, proposer, approver), `mh_policy_activation` (which version, or the default, runs from when, by whom; a trigger refuses a version that is not approved) |
 | Intake queue (v6, not exported) | `mh_intake` (the proposal's id, a `seq` for per-subject order, tenant, subject, record ids, writer, user, source and scope for erasure, `status` `pending`, `running`, `done` or `dead`, attempts, lease, the redacted proposal as JSON until it is stored, its outcome, error, embedder with the same guard trigger as `mh_memory`); erased with the subject or tenant, by user, agent or source, pruned after `intake.keep_done_secs` |
@@ -258,9 +294,16 @@ model T3).
 
 Every change is **expand, backfill, switch, contract** (TR-DB-01), never a rewrite in place:
 
-1. **Expand**: add nullable columns and new tables (`ADD COLUMN IF NOT EXISTS`). A process on the
-   previous version keeps working against the new schema (the `schema_upgrade` check inserts a row
-   the way a v1 process would).
+1. **Expand**: add nullable columns and new tables (`ADD COLUMN IF NOT EXISTS`). The statements
+   of the previous version still fit the new schema (the `schema_upgrade` check inserts a row
+   the way a v1 process would), so a process that is already running is not broken in the
+   middle of an upgrade. It cannot be started again on the upgraded database: a build refuses
+   one whose stored `schema_version` is newer than its own. This holds for nullable columns
+   and new tables only. Turning on `[database] episodic_partitions` is **not** an expand-only
+   change: the conversion moves the primary key from the memory table to its partitions, and
+   an `INSERT ... ON CONFLICT (id)` of a version 11 process that is still running then fails
+   (nothing is corrupted; those writes are refused until the process stops). Stop every older
+   process before enabling it, as the upgrade order above already requires.
 2. **Backfill** in batches of 5,000 rows, idempotent, so it can be interrupted.
 3. **Switch** readers and writers to the new fields; bump `schema_version`.
 4. **Contract** (drop what is no longer used) only in a later version, after every process has

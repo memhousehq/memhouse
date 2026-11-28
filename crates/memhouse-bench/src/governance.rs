@@ -1134,6 +1134,11 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
     // evaluation and the profile advisor (G20).
     checks.extend(crate::console_checks::run(engine).await);
 
+    // Governance II: legal hold, source purge, the deletion certificate, retention by scope and
+    // its resumption, restore replay, row-level security, partitions, anchors, the SIEM export,
+    // the evidence bundle and the detection set (G22).
+    checks.extend(crate::gov2_checks::run(engine).await);
+
     // Clean up every subject used by the suite.
     for name in ["injection", "benign", "pii", "delete", "update", "validity", "dedup"] {
         engine.forget_subject(None, &s(name), Some("bench".into())).await?;
@@ -1142,6 +1147,16 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
         engine.forget_subject(None, &s(&format!("iso{i}")), Some("bench".into())).await?;
     }
 
+    // The evidence export names checks from the catalog in the core crate: a check that is
+    // not listed there, or is listed with another requirement, fails until the catalog is updated.
+    for c in &mut checks {
+        if !memhouse_core::governance::evidence::CHECKS.iter().any(|(id, req)| *id == c.id && *req == c.requirement) {
+            c.passed = false;
+            // Also for a check that does not apply to this profile: counted as failed, not skipped.
+            c.not_applicable = None;
+            c.detail = format!("not in memhouse_core::governance::evidence::CHECKS with this requirement ({}); add it there. {}", c.requirement, c.detail);
+        }
+    }
     Ok(GovernanceReport::new(checks, Profile::of(engine).as_str(), start.elapsed().as_secs_f64() * 1000.0))
 }
 

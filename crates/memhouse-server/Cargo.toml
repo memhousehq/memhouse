@@ -33,6 +33,9 @@ tracing-opentelemetry.workspace = true
 axum.workspace = true
 tower-http.workspace = true
 rand.workspace = true
+reqwest.workspace = true
+sha2.workspace = true
+hex.workspace = true
 tower = { version = "0.5", features = ["util"] }
 
 [dev-dependencies]

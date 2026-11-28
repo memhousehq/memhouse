@@ -64,7 +64,7 @@ replace the defaults without touching the engine.
 | `core/src/policy.rs` | policy specs, the compiler and its precedence checks, the per-type rules (gate, retention, retrieval, access), versions, diff, approval and rollback |
 | `core/src/working.rs` | the session cache of working memory |
 | `core/src/preference.rs`, `promote.rs`, `sharing.rs` | scope-ordered preferences, promotion between types, grants between agents |
-| `bench/src/governance.rs` | the governance suite (85 checks); the API, identity, intake, schema, telemetry, policy, memory-type, packing, evaluation, language, tier, conformance, migration, embedded-transport and coding-template checks are in `*_checks.rs` next to it |
+| `bench/src/governance.rs` | the governance suite (97 checks); the Governance II checks (legal hold, source purge, certificates, retention, restore, row-level security, partitions, anchors, SIEM, evidence, detection: `gov2_checks.rs`, `gov2_ops_checks.rs`) and the API, identity, intake, schema, telemetry, policy, memory-type, packing, evaluation, language, tier, conformance, migration, embedded-transport and coding-template checks are in `*_checks.rs` next to it |
 | `core/src/staleness.rs` | git-aware staleness: the rules for a file seen changed, deleted or renamed (one pure function every store applies), the git blob hash, file-touched recall and revalidation |
 | `server/src/hook.rs`, `cli/src/hook.rs` | the harness hook adapters (`memhouse hook file-opened`, `file-edited`, `post-commit`) and their installers ([coding.md](coding.md)) |
 | `store-sqlite/src/*.rs` | the Lite profile's store: schema, FTS5 and the exact half-precision vector scan, the queues, migrations with a pre-upgrade copy, backup and restore ([lite.md](lite.md)) |
@@ -252,7 +252,11 @@ contract the engine relies on:
 |---|---|
 | `search` | filters on tenant, subject, `status = committed`, kinds, tags, denied labels, validity at `valid_at`, event time ≤ `as_of`, and windows; returns RRF-fused hits with per-retriever ranks |
 | `insert`, `set_superseded`, `set_status` | atomic per call |
-| `delete`, `delete_subject` | remove derived data too (cached vectors, facts whose `source_ids` contain the id, enrichment jobs, cached extractions) and write a ledger row, all in one transaction |
+| `delete`, `delete_subject` | remove derived data too (cached vectors, facts whose `source_ids` contain the id, enrichment jobs, cached extractions) and write a ledger row, all in one transaction; leave what an active legal hold matches (`governance::HELD_SQL` says which rows), and finish a deletion whose record is gone but whose held dependents were kept |
+| `purge` | one retention rule (`PurgeSpec`: a kind, an age or "expired", a scope and its exceptions) with the cascade of a deletion, in batches; each batch is one transaction that also adds its count to the rule's job run, so a purge that is killed and run again removes and counts every record once |
+| `legal_hold_*`, `held_count`, `deletion_*`, `canaries`, `canary_probe` | holds and deletion requests are stored with their audit event in one transaction; a completed request is never changed; a canary is looked for in every representation the store keeps |
+| `job_*` | at most one unfinished run per tenant and job; a step is marked done and its audit event written in one transaction, once |
+| `ledger_export`, `ledger_apply` | a ledger row already present is not applied twice; an unknown kind of row is refused before anything is applied; legal holds do not stop a replay |
 | `audit`, `audit_verify` | a linear hash chain (serialise inserts); the same `audit_hash` field order |
 | `enrich_claim` | never hands one job to two live workers; re-offers jobs whose lease has expired |
 | `embed_cache_*`, `llm_cache_*` | content-addressed get/put; deletions purge them |
@@ -272,8 +276,11 @@ impl memhouse_core::Store for SqliteStore {
 ```
 
 Then wire it into `memhouse_server::build_engine` (selected by the URL scheme, for example) and
-run the governance suite against it. **The suite is the acceptance test for a store:** all 18
-checks must pass.
+run the governance suite against it. **The suite is the acceptance test for a store:** every
+check that applies to it must pass (a check of something only another store has says so and is
+reported not applicable). The [store conformance kit](conformance.md) covers the obligations up
+to G21; those of Governance II above are checked by the suite's `legal_hold`, `source_purge`,
+`deletion_certificate`, `retention_scopes`, `retention_resume` and `restore_replay`.
 
 ### Add an embedding or rerank provider
 

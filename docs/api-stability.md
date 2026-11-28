@@ -6,7 +6,7 @@ that describes them. It is requirement QUAL-09. In short: within a major version
 correct client relies on is removed or changed. A breaking change needs a new major version, and
 the previous major version keeps working for at least 12 months.
 
-The current version is **v1**, `1.10.0`. v1 was frozen on 2026-11-02 (`1.0.0`); 1.1 added
+The current version is **v1**, `1.11.0`. v1 was frozen on 2026-11-02 (`1.0.0`); 1.1 added
 principals, agent tokens, `/v1/whoami`, `/v1/tokens`, `/v1/review`, `/v1/labels` and the
 `forbidden` error code; 1.2 added `recall_id`, `/v1/recalls/{id}/explanation` and `/metrics`
 (preview); 1.3 added the policy operations under `/v1/policies`; 1.4 made admission asynchronous
@@ -25,7 +25,10 @@ exclusion reasons; 1.10 added the admin console's routes (`/v1/session`,
 `GET /v1/review/queue`, `/v1/principals`, `/v1/keys`, and as preview `/v1/eval/suites`,
 `/v1/eval/runs`, `/v1/eval/trend` and `/v1/advisor`), `content` on a review and
 `rephrased_from` on its answer, the `principal:manage` permission, the session cookie as a
-third security scheme, and `session` as a value of `via` in `/v1/whoami`. Its contract is [`api/openapi.json`](../api/openapi.json), served at
+third security scheme, and `session` as a value of `via` in `/v1/whoami`; 1.11 added, for
+Governance II, `untrusted` on a forget and as a forget scope, `held` and `deletion_id` on its
+answer, `refused` on the answer of an ingest (rounds its policy left out; absent when none), and `retention.scopes`, `redaction.actions` and `write_gate.untrusted_sources` in a
+policy spec and its compiled form. Its contract is [`api/openapi.json`](../api/openapi.json), served at
 `/v1/openapi.json`.
 
 ## Versions
@@ -103,6 +106,10 @@ names a recorded exception, and they are written here so clients are ready for t
 | G20 (1.10) | `/` serves the admin console, which logs in with a session; the Memory Browser page that kept a key in the browser's storage is gone. | Log in to the console with a key ([console.md](console.md)). |
 | G20 (1.10) | Committing a quarantined record with `POST /v1/review` still answers `409`, now with the way out: reject it, or approve another wording with `content`. | Nothing. |
 | G20 (1.10) | The `principal:manage` permission is new, and keys list their permissions: an admin key created before 1.10 cannot manage principals over the API. Bootstrap keys can. | Create a new key for the admin. |
+| G22 (1.11) | A `forget` that meets a [legal hold](governance.md#legal-hold) deletes what no hold keeps and answers `200` with `held` (the records kept back); before 1.11 there were no holds. A forget by `id` of a held record answers `200` with `deleted: 0, held: 1`, not `404`. Where several holds apply to a record, it stays until the last of them is released. A dry run counts a held match under `held`, not `deleted`. The deprecated `DELETE /v1/memories/{id}`, whose answer can only say "deleted", answers `409 conflict` for a held record. | Read `held`: when it is not 0 the deletion completes when the holds are released. |
+| G22 (1.11) | A write whose `source` an operator listed in `[governance] untrusted_sources` answers `candidate` and waits for a reviewer when it would otherwise have been admitted; the injection screen still comes first, so such a write can also answer `quarantined`. Nothing is listed by default. | Nothing, unless your source is listed: then the write is admitted by a reviewer (`POST /v1/review`). |
+| G22 (1.11) | A write that holds a category the operator set to `reject` (`[governance] actions`) is refused with `400 invalid_request`. No category is rejected by default. | Remove the value and write again. |
+| G22 (1.11) | Working memory past its TTL is purged by the retention pass; before, it stayed readable by id with status `expired` ([recorded exception](#recorded-exception-expired-working-memory-is-purged-111)). | Recall is not affected: it never returned such a record. A client that reads a working note by id after its expiry gets `404` once the pass has run, and should treat it as gone. |
 | G30 | A gRPC binding of the same operations ([ADR 0008](adr/0008-grpc.md)). | Nothing. |
 
 ### Recorded exception: session working memory (1.5)
@@ -181,6 +188,18 @@ behaviour change needs a new major version. It was approved by the maintainer on
 
 No other exception has been made. The compatibility check below compares shapes, not this kind
 of behaviour, so behaviour changes are reviewed against this section by hand.
+
+### Recorded exception: expired working memory is purged (1.11)
+
+- **What changed.** Up to 1.10 a working-memory record past its expiry stayed stored with
+  status `expired`: never recalled, but answered by `GET /v1/memories/{id}`. From 1.11 the
+  hourly retention pass purges it, with its cached vectors, and the same request answers `404`.
+- **Why inside v1.** Retention that leaves expired records in storage does not meet the
+  requirement it implements (GOV-06: nothing expired present after the purge window). The
+  record was already unusable for recall, and its lifetime was always stated as its TTL.
+- **What a client does.** Nothing for recall. A client that reads working notes by id handles
+  `404` for a note past its expiry; one that needs the content longer promotes the note
+  (`POST /v1/promote`) or writes it as another type.
 
 ## Deprecation
 

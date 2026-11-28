@@ -12,6 +12,8 @@ pub mod datasets;
 mod embedded_checks;
 mod eval_checks;
 mod footprint;
+mod gov2_checks;
+mod gov2_ops_checks;
 pub mod governance;
 pub mod guard;
 mod identity_checks;

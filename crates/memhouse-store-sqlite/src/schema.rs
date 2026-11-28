@@ -389,4 +389,51 @@ CREATE TABLE IF NOT EXISTS mh_session (
   last_seen_at INTEGER NOT NULL
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS mh_session_expires_idx ON mh_session (expires_at);
+
+-- Schema 12 (G22). Legal holds (GOV-09): while a hold is active, every record it matches is
+-- exempt from retention and deletion.
+CREATE TABLE IF NOT EXISTS mh_legal_hold (
+  id          TEXT PRIMARY KEY,
+  tenant      TEXT NOT NULL,
+  target_kind TEXT NOT NULL CHECK (target_kind IN ('subject', 'user', 'agent', 'source', 'org', 'team', 'session', 'tenant')),
+  target      TEXT NOT NULL,
+  reason      TEXT NOT NULL,
+  placed_by   TEXT NOT NULL,
+  placed_at   INTEGER NOT NULL,
+  released_by TEXT,
+  released_at INTEGER
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS mh_legal_hold_active_idx ON mh_legal_hold (tenant) WHERE released_at IS NULL;
+
+-- The deletion workflow (TR-WF-01): one row per forget, from the request to its certificate.
+-- Identifiers, counts and hashes only.
+CREATE TABLE IF NOT EXISTS mh_deletion_request (
+  id           TEXT PRIMARY KEY,
+  tenant       TEXT NOT NULL,
+  scope        TEXT NOT NULL,
+  value        TEXT NOT NULL,
+  actor        TEXT NOT NULL,
+  requested_at INTEGER NOT NULL,
+  status       TEXT NOT NULL CHECK (status IN ('running', 'held', 'completed')),
+  completed_at INTEGER,
+  deleted      INTEGER NOT NULL DEFAULT 0,
+  held         INTEGER NOT NULL DEFAULT 0,
+  executions   INTEGER NOT NULL DEFAULT 0,
+  canaries     TEXT NOT NULL DEFAULT '[]',
+  certificate  TEXT
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS mh_deletion_request_open_idx ON mh_deletion_request (tenant, status) WHERE status <> 'completed';
+CREATE INDEX IF NOT EXISTS mh_deletion_request_tenant_idx ON mh_deletion_request (tenant, requested_at DESC);
+
+-- Durable job runs (TR-WF-02): at most one unfinished run per tenant and job.
+CREATE TABLE IF NOT EXISTS mh_job_run (
+  id          TEXT PRIMARY KEY,
+  tenant      TEXT NOT NULL,
+  job         TEXT NOT NULL,
+  state       TEXT NOT NULL DEFAULT '{}',
+  started_at  INTEGER NOT NULL,
+  updated_at  INTEGER NOT NULL,
+  finished_at INTEGER
+) WITHOUT ROWID;
+CREATE UNIQUE INDEX IF NOT EXISTS mh_job_run_open_idx ON mh_job_run (tenant, job) WHERE finished_at IS NULL;
 "#;

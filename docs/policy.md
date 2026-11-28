@@ -105,6 +105,9 @@ partition = "author"          # a user's own preferences are stored with the use
 | `language.enabled` | some of the server's enabled languages (`[language] enabled`) | may only narrow the server's list: a language the server has not enabled is refused. The tenant's writes and questions are detected among these; the injection screen is not narrowed ([languages.md](languages.md#the-injection-screen-is-never-narrowed)) |
 | `retention.episodic_days` | days, 0 = keep | where governance purges: 1 to its days |
 | `retention.working_ttl_secs` | 1 second to 30 days | |
+| `retention.scopes` | rules for one type within one scope, [below](#retention-per-type-and-scope) | `episodic`: within governance's limit; not for `working` |
+| `write_gate.untrusted_sources` | source patterns (`*` matches any run of characters) whose writes wait for a reviewer | must include every `[governance] untrusted_sources` pattern |
+| `redaction.actions` | per category: `mask`, `redact`, `reject` | at least as strict as governance's action for the category (`mask` < `redact` < `reject`); `mask` only for `card`, `ssn`, `iban`, `phone`. A category given an action is on, with that action (masked, redacted or rejected), even if `redaction.categories` does not list it |
 | `types.<kind>.*` | per-type rules, [below](#per-type-sections) | a type's rules may be tightened, never loosened |
 | `redaction.categories` | `secret`, `card`, `ssn`, `iban`, `email`, `phone`, `ip` | must include `secret` and every governance category |
 | `recall.denied_labels` | labels never read, and refused on writes through the API | must include every `[governance] denied_labels` label |
@@ -146,6 +149,44 @@ The defaults, as `memhouse policy show` prints them:
 | `procedural` | `confirmation` | kept | `task_matched` | false | reviewer |
 | `taxonomic` | `approval` | kept | `exact` | false | admin |
 | `commitment`, `document` | `full` | kept | `hybrid` | false | reviewer |
+
+### Retention per type and scope
+
+Retention is set per memory type (`types.<kind>.retention_days`), and within a type per scope
+(GOV-06):
+
+```toml
+[types.semantic]
+retention_days = 730                 # facts: two years
+
+[[retention.scopes]]                 # the legal team's conversations: a week
+level = "team"
+value = "legal"
+kind = "episodic"
+days = 7
+
+[[retention.scopes]]                 # one user's facts: kept, whatever the type's rule says
+level = "user"
+value = "user:vip"
+kind = "semantic"
+days = 0
+```
+
+| Field | Values |
+|---|---|
+| `level` | `subject`, `org`, `team`, `agent`, `user`, `session`: the subject, or a level of the record's [scope](memory-types.md#scopes-and-inheritance) |
+| `value` | the subject, org, team, agent, user or session the rule is for |
+| `kind` | the memory type; not `working`, which expires by its TTL |
+| `days` | days after which the scope's records of the type are purged; 0 keeps them |
+
+- Where two rules match one record, the more specific level wins: `session`, then `user`,
+  `agent`, `team`, `org`, `subject`. Any scope rule wins over the type's own rule, in both
+  directions: a scope may keep its records shorter or longer than the type does.
+- For `episodic`, every rule stays within `[governance] episodic_retention_days` where that is
+  set: at most its days, and never 0.
+- A record under a [legal hold](governance.md#legal-hold) is kept whatever the rules say.
+- Retention is by write time (`created_at`). Each rule that purged something writes a
+  `retention.purge` audit event naming the rule.
 
 ## Lifecycle
 
