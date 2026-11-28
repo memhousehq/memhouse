@@ -138,6 +138,8 @@ jobs:
           shellcheck --severity=warning scripts/e2e.sh scripts/sdk-conformance.sh scripts/ci.sh scripts/publish/*.sh bindings/python/test.sh
       - name: actionlint
         run: actionlint
+      - name: crate publish order (what the release publishes to crates.io, in order)
+        run: scripts/release/crate-order.sh
       - name: Helm chart (lint, render, schema)
         run: scripts/helm-check.sh
       - name: install script against a made-up release

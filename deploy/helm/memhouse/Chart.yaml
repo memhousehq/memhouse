@@ -5,8 +5,8 @@ description: MemHouse, a governed memory service for AI agents, on your own Post
 type: application
 # The chart and the application are released together, under one version
 # (`cargo xtask version` keeps both lines in step with the workspace).
-version: 2.0.0-rc.2
-appVersion: "2.0.0-rc.2"
+version: 2.0.0-rc.3
+appVersion: "2.0.0-rc.3"
 kubeVersion: ">=1.27.0-0"
 home: https://github.com/memhousehq/memhouse
 sources:

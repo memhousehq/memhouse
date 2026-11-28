@@ -221,7 +221,7 @@ permissions listed; the workflow's default is none.
 | `assemble` | Linux | the npm package of the binding with its three addons, both SBOMs, the Homebrew formula, `SHA256SUMS`, and `scripts/release/complete.sh`: nothing is missing | contents: read |
 | `sign` | Linux | Sigstore signatures (`scripts/release/sign.sh`), provenance and SBOM attestations (`actions/attest`), then verifies its own signatures | id-token: write, attestations: write, contents: read |
 | `publish-oci` | Linux, environment `release` | pushes the image archive and the chart, signs both by digest, attests the image | packages: write, id-token: write, attestations: write, contents: read |
-| `publish-crates` | Linux, environment `release` | exchanges the OIDC token at crates.io for a token of this job, publishes in dependency order, revokes it | id-token: write, contents: read |
+| `publish-crates` | Linux, environment `release` | exchanges the OIDC token at crates.io for a token of this job, publishes in dependency order, dev-dependencies included (`scripts/release/crate-order.sh`), revokes it | id-token: write, contents: read |
 | `publish-pypi` | Linux, environment `release` | `uv publish --trusted-publishing always` | id-token: write, contents: read |
 | `publish-npm` | Linux, environment `release` | `npm publish` of the two tarballs | id-token: write, contents: read |
 | `publish-github` | Linux, environment `release` | the GitHub release with every file, after the four above | contents: write |
