@@ -422,6 +422,9 @@ jobs:
           scripts/release/sbom.sh image "image/memhouse-$VERSION-image.oci.tar" dist
       - name: Homebrew formula, checksums, completeness
         run: |
+          # The formula is written from the archives' checksums, so SHA256SUMS is made first,
+          # then again once the formula is in dist (as scripts/release-dry-run.sh does).
+          scripts/release/checksums.sh dist
           scripts/release/homebrew.sh dist "$RUNNER_TEMP/memhouse.rb"
           ruby -c "$RUNNER_TEMP/memhouse.rb"
           cp "$RUNNER_TEMP/memhouse.rb" dist/memhouse.rb
