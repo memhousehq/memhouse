@@ -1,6 +1,6 @@
 {
   "name": "@memhouse/lite",
-  "version": "2.0.0",
+  "version": "2.0.0-rc.2",
   "description": "MemHouse Lite embedded in a Node.js process: the REST API in process, with the same governance",
   "license": "Apache-2.0",
   "repository": {

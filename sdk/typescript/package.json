@@ -1,6 +1,6 @@
 {
   "name": "@memhouse/sdk",
-  "version": "2.0.0",
+  "version": "2.0.0-rc.2",
   "description": "TypeScript SDK for MemHouse, a governed memory service for AI agents: a client generated from the OpenAPI specification, and lifecycle hooks that only call the API",
   "license": "Apache-2.0",
   "repository": {
