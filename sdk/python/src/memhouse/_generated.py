@@ -597,8 +597,8 @@ class IngestResult(_IngestResultRequired, total=False):
     # their ids resolve to `candidate` until the pipeline has stored them.
     queued: bool
 
-    # Rounds left out because the policy refuses them (a category set to `reject`, or text
-    # over the limit): not stored, not queued. The other rounds are.
+    # Rounds left out because the policy refuses them (a category set to `reject`): not
+    # stored, not queued. The other rounds are. Text over the limit is shortened and stored.
     refused: int
 
 

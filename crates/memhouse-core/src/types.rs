@@ -1083,8 +1083,8 @@ pub struct IngestResult {
     pub quarantined: usize,
     /// Rounds already stored, skipped.
     pub deduplicated: usize,
-    /// Rounds left out because the policy refuses them (a category set to `reject`, or text
-    /// over the limit): not stored, not queued. The other rounds are.
+    /// Rounds left out because the policy refuses them (a category set to `reject`): not
+    /// stored, not queued. The other rounds are. Text over the limit is shortened and stored.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub refused: usize,
     /// Ids of the rounds stored (or queued).

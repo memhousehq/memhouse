@@ -686,8 +686,8 @@ export interface IngestResult {
    */
   queued?: boolean;
   /**
-   * Rounds left out because the policy refuses them (a category set to `reject`, or text
-   * over the limit): not stored, not queued. The other rounds are.
+   * Rounds left out because the policy refuses them (a category set to `reject`): not
+   * stored, not queued. The other rounds are. Text over the limit is shortened and stored.
    */
   refused?: number;
   /**

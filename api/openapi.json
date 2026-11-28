@@ -1468,7 +1468,7 @@
             "type": "boolean"
           },
           "refused": {
-            "description": "Rounds left out because the policy refuses them (a category set to `reject`, or text\nover the limit): not stored, not queued. The other rounds are.",
+            "description": "Rounds left out because the policy refuses them (a category set to `reject`): not\nstored, not queued. The other rounds are. Text over the limit is shortened and stored.",
             "format": "uint",
             "minimum": 0,
             "type": "integer"

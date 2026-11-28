@@ -507,8 +507,10 @@ impl Engine {
         if !HOLD_KINDS.contains(&target_kind) {
             return Err(error::invalid(format!("{target_kind:?} is not something a legal hold is placed on (one of: {})", HOLD_KINDS.join(", "))));
         }
-        let target = if target_kind == "tenant" { tenant.to_string() } else { target.trim().to_string() };
-        if target.is_empty() {
+        // The target is kept exactly as given: an identifier may end in a space, and a hold on
+        // a trimmed copy would not match its records. Trimming only decides whether it is blank.
+        let target = if target_kind == "tenant" { tenant.to_string() } else { target.to_string() };
+        if target.trim().is_empty() {
             return Err(error::invalid(format!("a legal hold on a {target_kind} names it")));
         }
         if reason.trim().is_empty() {
