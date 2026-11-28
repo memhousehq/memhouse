@@ -672,7 +672,8 @@ jobs:
           echo "::add-mask::$token"
           revoke() { curl -sS -X DELETE https://crates.io/api/v1/trusted_publishing/tokens -H "Authorization: Bearer $token" -H "User-Agent: $agent" >/dev/null || true; }
           trap revoke EXIT
-          for crate in memhouse-core memhouse-store-postgres memhouse-store-sqlite memhouse-models memhouse-conformance memhouse-server memhouse-bench memhouse-cli; do
+          # In dependency order, dev-dependencies included (scripts/release/crate-order.sh).
+          for crate in $(scripts/release/crate-order.sh); do
             if curl -sf -H "User-Agent: $agent" "https://crates.io/api/v1/crates/$crate/$VERSION" >/dev/null; then
               echo "$crate $VERSION is already published"
               continue
@@ -739,7 +740,8 @@ jobs:
               echo "$name $VERSION is already published"
               continue
             fi
-            npm publish "dist/${pair#*:}-$VERSION.tgz" --access public --tag "$dist_tag"
+            # "./": without it npm reads "dist/<file>" as a GitHub repository (owner/name).
+            npm publish "./dist/${pair#*:}-$VERSION.tgz" --access public --tag "$dist_tag"
           done
 
   # The GitHub release, last: `releases/latest` (what install.sh and the Homebrew tap read)

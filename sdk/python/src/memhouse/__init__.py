@@ -15,6 +15,6 @@ from ._generated import API_VERSION
 from .client import HttpTransport, MemHouse, MemHouseError, Transport
 from .hooks import MemoryHooks
 
-__version__ = "2.0.0rc2"
+__version__ = "2.0.0rc3"
 
 __all__ = ["API_VERSION", "HttpTransport", "MemHouse", "MemHouseError", "MemoryHooks", "Transport", "__version__"]
