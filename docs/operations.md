@@ -643,8 +643,10 @@ table.
 
 ## SIEM export
 
-With `[siem]` set, `memhouse serve` sends every audit event to your SIEM, in order, within
-seconds of its being written (GOV-15: 99.9% within 60 seconds).
+With `[siem]` set, `memhouse serve` sends every audit event to your SIEM, in order, normally
+within seconds of its being written (GOV-15: 99.9% within 60 seconds while the receiver is up).
+A receiver that is down delays its events, and the cases below can lose or skip one: the audit
+log in the database stays the complete record.
 
 ```toml
 [siem]
@@ -675,7 +677,8 @@ otlp_headers_env = { authorization = "SIEM_TOKEN" }
     receiver is down or the network drops them are lost and not sent again.
 
   A receiver that is detectably down delays its events (they are sent when it is back; the
-  service logs the outage once). Where the SIEM must be known to hold every event, use OTLP.
+  service logs the outage once). Where you need the receiver's acknowledgement of each batch, use OTLP: only an event the
+  collector itself refuses (next point) is then missing, and the service names it.
   Each event carries its own hash and the hash of the event before it, so a gap can be found
   in the SIEM afterwards.
 - An OTLP collector that refuses a batch as such (HTTP 400, 413 or 422) gets it again in
