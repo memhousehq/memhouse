@@ -8,7 +8,9 @@
 #   scripts/release/crate-order.sh
 set -eu
 cd "$(dirname "$0")/../.."
-cargo metadata --format-version 1 --no-deps --locked | jq -r '
+# Not a pipeline: a failed `cargo metadata` would give jq empty input, and an empty order.
+meta=$(cargo metadata --format-version 1 --no-deps --locked)
+order=$(printf '%s' "$meta" | jq -r '
   [.packages[] | select(.publish != []) | {name, deps: ([.dependencies[] | select(.path != null) | .name] | unique)}] as $crates
   | ($crates | map(.name)) as $names
   | def order($done; $rest):
@@ -19,4 +21,6 @@ cargo metadata --format-version 1 --no-deps --locked | jq -r '
           else order($done + ($ready | map(.name) | sort); [$rest[] | select(.name | IN($ready[].name) | not)])
           end
       end;
-    order([]; $crates) | .[]'
+    order([]; $crates) | .[]')
+[ -n "$order" ] || { echo "crate-order.sh: no publishable crates found" >&2; exit 1; }
+printf '%s\n' "$order"

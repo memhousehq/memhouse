@@ -672,8 +672,11 @@ jobs:
           echo "::add-mask::$token"
           revoke() { curl -sS -X DELETE https://crates.io/api/v1/trusted_publishing/tokens -H "Authorization: Bearer $token" -H "User-Agent: $agent" >/dev/null || true; }
           trap revoke EXIT
-          # In dependency order, dev-dependencies included (scripts/release/crate-order.sh).
-          for crate in $(scripts/release/crate-order.sh); do
+          # In dependency order, dev-dependencies included (scripts/release/crate-order.sh). Taken
+          # first, so that a failure stops the job here and not as a loop over nothing.
+          crates=$(scripts/release/crate-order.sh)
+          test -n "$crates"
+          for crate in $crates; do
             if curl -sf -H "User-Agent: $agent" "https://crates.io/api/v1/crates/$crate/$VERSION" >/dev/null; then
               echo "$crate $VERSION is already published"
               continue
