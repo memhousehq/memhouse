@@ -1290,6 +1290,13 @@ impl PgStore {
         if let Some(first) = rows.first().filter(|f| rows.iter().all(|w| w.r.tenant == f.r.tenant)) {
             self.scope_tx(&mut tx, &first.r.tenant, None).await?;
         }
+        // Not while the last step of an erasure of one of these tenants counts what is left.
+        let mut tenants: Vec<&str> = rows.iter().map(|w| w.r.tenant.as_str()).collect();
+        tenants.sort_unstable();
+        tenants.dedup();
+        for tenant in tenants {
+            sqlx::query(governance::TENANT_ERASE_SHARED).bind(tenant).execute(&mut *tx).await?;
+        }
         let inserted = self.write_rows_in(&mut tx, rows, skip_existing).await?;
         tx.commit().await?;
         Ok(inserted)
@@ -1329,6 +1336,14 @@ impl PgStore {
         };
         // An id given twice in one batch is written once (the first of them), as a table with
         // a key over every row would have it: two months' partitions would take both.
+        // A write that is not an import refuses an id given twice, as the key did before the
+        // table was partitioned: nothing of the batch is written.
+        if partitioned && !skip_existing {
+            let mut seen = std::collections::HashSet::new();
+            if let Some(twice) = rows.iter().find(|w| !seen.insert(w.r.id)) {
+                anyhow::bail!("record id {} is given twice in one write", twice.r.id);
+            }
+        }
         let fresh = first_of_each(rows.iter().filter(|w| !present.contains(&w.r.id)), |w| w.r.id, partitioned);
         for chunk in fresh.chunks(400) {
             let mut qb = sqlx::QueryBuilder::new(
@@ -1399,7 +1414,9 @@ impl PgStore {
             inserted.extend(ids);
         }
         let done: std::collections::HashSet<Uuid> = inserted.iter().copied().collect();
-        for w in rows.iter().filter(|w| done.contains(&w.r.id)) {
+        // The rows that were written, not every row given: the representations of a second
+        // row of an id that was left out are not attached to the first.
+        for w in fresh.iter().copied().filter(|w| done.contains(&w.r.id)) {
             let r = w.r;
             if let Some(st) = &r.structured {
                 sqlx::query("INSERT INTO mh_structured (memory_id, tenant, subject, record_type, attrs) VALUES ($1, $2, $3, $4, $5)")
@@ -1497,7 +1514,9 @@ impl PgStore {
 /// that follow those links (MEM-05). A deletion's cascade reads one snapshot: without this, a
 /// promotion of a dependent that commits while the cascade waits on a row would be missed.
 /// `$1` is the tenant, `$2` the subject; held until the transaction ends.
-pub const SUBJECT_LOCK_SQL: &str = "SELECT pg_advisory_xact_lock(7270002, hashtext($1 || chr(31) || $2))";
+/// (With the tenant's erasure lock, shared: a write of the tenant is not in progress while
+/// the last step of a tenant erasure counts what is left and records the erasure as complete.)
+pub const SUBJECT_LOCK_SQL: &str = "SELECT pg_advisory_xact_lock_shared(7270006, hashtext($1)), pg_advisory_xact_lock(7270002, hashtext($1 || chr(31) || $2))";
 
 const SUPERSEDE_SQL: &str = "UPDATE mh_memory SET status = 'superseded', superseded_by = $3, \
      valid_to = least(COALESCE(valid_to, 'infinity'), greatest(COALESCE((SELECT n.valid_from FROM mh_memory n WHERE n.tenant = $1 AND n.id = $3), now()), valid_from)), \
@@ -1858,6 +1877,9 @@ impl Store for PgStore {
         self.ensure_partitions(w.records.iter().filter_map(|n| self.epart_of(n.memory.kind, n.memory.created_at))).await?;
         let mut tx = self.pool.begin().await?;
         self.scope_tx(&mut tx, &w.tenant, None).await?;
+        // Shared with every other write of the tenant, exclusive to the last step of a tenant
+        // erasure: that step does not count the tenant's records while this one is being written.
+        sqlx::query(governance::TENANT_ERASE_SHARED).bind(&w.tenant).execute(&mut *tx).await?;
         // A promotion takes its subject's lock before any row lock (the order a deletion takes
         // them in), so the two never wait on each other.
         // So does a revision with code references: no observation of the subject's files runs
@@ -2366,6 +2388,10 @@ impl Store for PgStore {
         self.deletion_open(tenant, after, limit).await
     }
 
+    async fn record_held(&self, tenant: &str, id: Uuid) -> anyhow::Result<bool> {
+        self.held_record(tenant, id).await
+    }
+
     async fn held_count(&self, tenant: &str, scope: ForgetScope, value: &str) -> anyhow::Result<u64> {
         self.held(tenant, scope, value).await
     }
@@ -2437,8 +2463,22 @@ impl Store for PgStore {
         // parser, not cast in the database: Postgres' `jsonb` refuses text the writer accepts.
         // No filter on the raw text: a value is stored escaped (a quote, a newline), and a
         // search for its plain spelling would leave out the very event that holds it.
-        let details: Vec<String> = sqlx::query_scalar("SELECT detail FROM mh_audit WHERE tenant = $1 AND action = $2").bind(tenant).bind(action).fetch_all(&self.pool).await?;
-        Ok(details.iter().any(|d| serde_json::from_str::<serde_json::Value>(d).is_ok_and(|v| v.get(key).and_then(|x| x.as_str()) == Some(value))))
+        // Read a page at a time, newest first, and stopped at the first match: the whole
+        // history of the action is not held in memory for one lookup.
+        let mut before = i64::MAX;
+        loop {
+            let page: Vec<(i64, String)> = sqlx::query_as("SELECT id, detail FROM mh_audit WHERE tenant = $1 AND action = $2 AND id < $3 ORDER BY id DESC LIMIT 500")
+                .bind(tenant)
+                .bind(action)
+                .bind(before)
+                .fetch_all(&self.pool)
+                .await?;
+            let Some((last, _)) = page.last() else { return Ok(false) };
+            before = *last;
+            if page.iter().any(|(_, d)| serde_json::from_str::<serde_json::Value>(d).is_ok_and(|v| v.get(key).and_then(|x| x.as_str()) == Some(value))) {
+                return Ok(true);
+            }
+        }
     }
 
     async fn state_get(&self, key: &str) -> anyhow::Result<Option<String>> {
@@ -2915,6 +2955,13 @@ impl Store for PgStore {
         let mut tx = self.pool.begin().await?;
         // No explanation of the tenant is being written while its explanations are removed.
         sqlx::query(governance::TENANT_ERASE_EXCLUSIVE).bind(tenant).execute(&mut *tx).await?;
+        // Counted again under the lock, which a write of the tenant holds shared until it
+        // commits: the erasure is not recorded as complete while a record of the tenant is
+        // there (one written since the count above). The next pass finishes it.
+        let left: i64 = sqlx::query_scalar("SELECT count(*) FROM mh_memory WHERE tenant = $1").bind(tenant).fetch_one(&mut *tx).await?;
+        if left > 0 {
+            return Ok(total);
+        }
         self.erase_tenant_rest(&mut tx, tenant).await?;
         sqlx::query("INSERT INTO mh_deletion_ledger (at, tenant, scope, actor) VALUES (clock_timestamp(), $1, 'tenant', $2)").bind(tenant).bind(actor).execute(&mut *tx).await?;
         tx.commit().await?;

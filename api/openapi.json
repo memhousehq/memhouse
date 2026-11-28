@@ -1467,6 +1467,12 @@
             "description": "True while the rounds are still in the intake queue (the request did not set `wait`):\ntheir ids resolve to `candidate` until the pipeline has stored them.",
             "type": "boolean"
           },
+          "refused": {
+            "description": "Rounds left out because the policy refuses them (a category set to `reject`, or text\nover the limit): not stored, not queued. The other rounds are.",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
           "stored": {
             "description": "Rounds stored; while `queued`, the rounds accepted into the intake queue.",
             "format": "uint",

@@ -795,8 +795,17 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 }
                 Ok(r) => {
                     println!("deleted {} memories ({} {})", r.deleted, r.scope.as_str(), r.value);
+                    // The certificate exists once the request is completed: one that is
+                    // still open (something of its sample is still found) says so instead.
+                    let completed = match r.deletion_id {
+                        Some(d) => eng.deletion(&eng.cfg.memory.tenant, d).await.map(|x| x.status == memhouse_core::governance::DeletionStatus::Completed).unwrap_or(false),
+                        None => false,
+                    };
                     match (r.held, r.deletion_id) {
-                        (0, Some(d)) => println!("  certificate: memhouse deletion certificate {d}"),
+                        (0, Some(d)) if completed => println!("  certificate: memhouse deletion certificate {d}"),
+                        (0, Some(d)) => println!(
+                            "  deletion {d} is not complete yet: a trace of it is still found. `memhouse retention` checks again and completes it (`memhouse deletion list`)"
+                        ),
                         (held, Some(d)) => println!("  {held} records are under a legal hold: deletion {d} completes when the hold is released"),
                         _ => {}
                     }
@@ -864,6 +873,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                     None if ledger.is_some() => anyhow::bail!(
                         "`--ledger` re-applies a ledger to a backup being restored: give the backup's directory with it. `--no-ledger` alone records a database file put in place by hand; the two do not go together"
                     ),
+                    None if force => anyhow::bail!("`--force` replaces an existing database with a backup: give the backup's directory with it"),
                     None => anyhow::ensure!(
                         no_ledger,
                         "name the directory written by `memhouse backup`; or `--no-ledger` to record a database file put in place by hand as fit to serve"
@@ -999,7 +1009,19 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             if json {
                 println!("{}", serde_json::to_string_pretty(&r)?);
             } else {
-                println!("purged {} records", if r.purged > 0 { r.purged } else { r.expired });
+                if r.busy {
+                    println!("another retention pass of this tenant is running: nothing was done");
+                    return Ok(());
+                }
+                // Two things, two lines: a record past its expiry is marked expired (and no
+                // longer recalled); a purged record is removed.
+                println!("purged {} records", r.purged);
+                if r.expired > 0 {
+                    println!("  {} records past their expiry marked expired", r.expired);
+                }
+                if !r.complete {
+                    println!("  the pass was stopped before it finished; the next one continues it");
+                }
                 if r.resumed {
                     println!("  continued a pass that an earlier run left unfinished");
                 }
@@ -1011,6 +1033,9 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 }
                 if r.deletions_completed > 0 {
                     println!("  {} pending deletions completed", r.deletions_completed);
+                }
+                if r.deletions_failed > 0 {
+                    println!("  ! {} pending deletions could not be carried out (see the log); they stay open and are tried again", r.deletions_failed);
                 }
             }
         }

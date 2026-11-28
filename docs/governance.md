@@ -127,7 +127,7 @@ actions = { card = "mask", ssn = "reject" }
 |---|---|---|
 | `redact` (the default) | `[REDACTED:card]` | is stored |
 | `mask` | `[MASKED:card:1111]`: the last four letters and digits, for `card`, `ssn`, `iban` and `phone` | is stored |
-| `reject` | — | is refused with `invalid_request`, naming the category, never the value; nothing is stored. An ingested conversation loses the round that holds the match and keeps the others |
+| `reject` | — | is refused with `invalid_request`, naming the category, never the value; nothing is stored. An ingested conversation loses the round that holds the match and keeps the others; the answer counts the rounds left out (`refused`) |
 
 A `secret` cannot be masked (a masked credential still shows part of it). A policy may make a
 category's action stricter (mask < redact < reject), never looser. The governance check
@@ -321,7 +321,8 @@ memhouse deletion certificate 0193a6f2-… --verify -o acme-erasure.json
 memhouse deletion list --status held
 ```
 
-A request is completed, and certified, only when the probe is clean. If a canary is still
+A request is completed, and certified, only when the store has no record left that it matches
+(asked of the store, whatever the sample holds) and the probe is clean. If a canary is still
 found, the request stays open with what was found (`deletion.unverified`, once, written with
 that state in one transaction) and is probed again by every retention pass until nothing is
 left; `memhouse deletion certificate <id>` says so meanwhile. It is carried out again only
@@ -339,7 +340,9 @@ id in every delete path of both stores and is not part of G22.
 
 One recovery pass per tenant runs at a time, under a lease in the database that the pass
 renews before every request and checks before every step, and gives back only while it is
-still its own; a pass that lost its lease stops.
+still its own; a pass that lost its lease stops. A request that fails in a pass is reported
+and left open, and the pass goes on to the next. A retention pass holds a lease of its own in
+the same way: a second `memhouse retention` while one runs says so and does nothing.
 
 The certificate is not signed with a key of its own: its integrity rests on the audit chain
 (and on [anchors](#audit-log) of that chain kept elsewhere). A deletion interrupted by a
@@ -575,6 +578,9 @@ the chain, and shows that the chain verifies while the anchor does not.
 
 `[siem]` makes `memhouse serve` send every audit event to your SIEM as CEF over syslog, as
 OTLP logs, or both, within seconds of its being written (GOV-15: 99.9% within 60 seconds).
+Sending every event is not the SIEM holding every event: syslog has no acknowledgement, so an
+event a receiver loses after it accepted the bytes is not sent again, and an event an OTLP
+collector refuses for good is skipped (named or counted in the export's status).
 The events are what the audit log holds: identifiers, counts and hashes, never memory content.
 A receiver that is detectably down delays its events; what counts as delivered differs by protocol (only OTLP is acknowledged by the receiver). Setup, formats and limits:
 [operations.md](operations.md#siem-export). The `siem_export` check runs both receivers,

@@ -611,6 +611,12 @@ pub trait Store: Send + Sync {
     async fn legal_hold_get(&self, tenant: &str, id: Uuid) -> anyhow::Result<Option<crate::governance::LegalHold>> {
         Ok(self.legal_holds(tenant, false).await?.into_iter().find(|h| h.id == id))
     }
+    /// Whether an active legal hold keeps this record itself (not what was derived from it).
+    /// The default reads the hold list, which is capped; a store asks its own predicate.
+    async fn record_held(&self, tenant: &str, id: Uuid) -> anyhow::Result<bool> {
+        let Some(m) = self.get(tenant, id).await? else { return Ok(false) };
+        Ok(self.legal_holds(tenant, true).await?.iter().any(|h| h.holds(&m)))
+    }
     /// Records a `forget` of this scope matches that an active legal hold keeps. For a record:
     /// the record itself and what was derived or promoted from it.
     async fn held_count(&self, _tenant: &str, _scope: ForgetScope, _value: &str) -> anyhow::Result<u64> {

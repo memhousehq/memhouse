@@ -748,6 +748,16 @@ impl Store for SqliteStore {
         self.deletion_open(tenant, after, limit)
     }
 
+    async fn record_held(&self, tenant: &str, id: Uuid) -> anyhow::Result<bool> {
+        let held: Option<bool> = first(
+            &self.conn(),
+            &format!("SELECT {} FROM mh_memory m WHERE m.tenant = ?1 AND m.id = ?2", memhouse_core::governance::HELD_SQL),
+            [tenant, id.to_string().as_str()],
+            |r| Ok(r.get(0)?),
+        )?;
+        Ok(held.unwrap_or(false))
+    }
+
     async fn held_count(&self, tenant: &str, scope: ForgetScope, value: &str) -> anyhow::Result<u64> {
         self.held(tenant, scope, value)
     }

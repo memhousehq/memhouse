@@ -203,6 +203,8 @@ pub async fn audit(eng: &Engine, cmd: AuditCmd) -> anyhow::Result<()> {
     match cmd {
         AuditCmd::Anchor { verify: Some(file), .. } => {
             let anchors = memhouse_server::governance::read_anchors(&file)?;
+            // Nothing to compare is not a match: the wrong file, or an empty one, is said.
+            anyhow::ensure!(!anchors.is_empty(), "{} holds no anchor: there is nothing to compare the chain with", file.display());
             let checks = eng.anchors_check(&anchors).await?;
             let bad: Vec<_> = checks.iter().filter(|c| c.result != "match").collect();
             for c in &bad {

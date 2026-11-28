@@ -203,9 +203,14 @@ fn purge_filter(spec: &PurgeSpec) -> (String, Vec<String>) {
     (sql, values)
 }
 
+/// The most days a rule's age is taken as: about 2,700 years, older than any record, and small
+/// enough for the database's and this process's time arithmetic. A larger number means the
+/// same thing (nothing is that old) and must not wrap into a cutoff in the future.
+const MAX_AGE_DAYS: u32 = 1_000_000;
+
 fn days_of(spec: &PurgeSpec) -> i32 {
     match spec.age {
-        PurgeAge::OlderThanDays(d) => d as i32,
+        PurgeAge::OlderThanDays(d) => d.min(MAX_AGE_DAYS) as i32,
         PurgeAge::Expired => 0,
     }
 }
@@ -520,16 +525,16 @@ impl PgStore {
             vec![]
         };
         let kept_held = !held_below.is_empty();
-        let dependents: Vec<(Uuid, String)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        let dependents: Vec<(Uuid, String, Option<String>)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "WITH RECURSIVE dep(id) AS (SELECT m.id FROM mh_memory m WHERE m.tenant = $1 AND {dependents_of} {recurse}) \
-             DELETE FROM mh_memory m WHERE m.tenant = $1 AND m.id IN (SELECT id FROM dep) {keep_held} RETURNING m.id, m.content"
+             DELETE FROM mh_memory m WHERE m.tenant = $1 AND m.id IN (SELECT id FROM dep) {keep_held} RETURNING m.id, m.content, m.alt_hash"
         )))
         .bind(tenant)
         .bind(&ids)
         .bind(&kept)
         .fetch_all(&mut *tx)
         .await?;
-        removed.extend(dependents.iter().map(|(d, _)| *d));
+        removed.extend(dependents.iter().map(|(d, _, _)| *d));
         // What a hold still keeps below this record stays within reach of the next attempt,
         // whatever went between it and the record; once nothing is kept, the note goes.
         if kept_held {
@@ -544,17 +549,21 @@ impl PgStore {
         if removed.is_empty() {
             return Ok(None);
         }
-        let contents: Vec<&str> = dependents.iter().map(|(_, c)| c.as_str()).collect();
-        sqlx::query("DELETE FROM mh_embed_cache WHERE hash IN (SELECT encode(sha256(convert_to($1 || c, 'UTF8')), 'hex') FROM unnest($2::text[]) c)")
+        let contents: Vec<&str> = dependents.iter().map(|(_, c, _)| c.as_str()).collect();
+        // Both cached vectors of each dependent that went: the one of its text and the
+        // alternative one, which only the deleted row named.
+        let alt_hashes: Vec<&str> = dependents.iter().filter_map(|(_, _, a)| a.as_deref()).collect();
+        sqlx::query("DELETE FROM mh_embed_cache WHERE hash IN (SELECT encode(sha256(convert_to($1 || c, 'UTF8')), 'hex') FROM unnest($2::text[]) c) OR hash = ANY($3)")
             .bind(&self.passage_prefix)
             .bind(&contents)
+            .bind(&alt_hashes)
             .execute(&mut *tx)
             .await?;
         if promotions {
             // Promotions of this record, or of anything that went with it, that are still queued
             // (or set aside with their payload): gone with it on every erasure path, single or
             // bulk, so none is readable by its id or written later.
-            let gone: Vec<String> = std::iter::once(id).chain(dependents.iter().map(|(d, _)| *d)).map(|u| u.to_string()).collect();
+            let gone: Vec<String> = std::iter::once(id).chain(dependents.iter().map(|(d, _, _)| *d)).map(|u| u.to_string()).collect();
             sqlx::query(
                 "DELETE FROM mh_intake q WHERE q.tenant = $1 AND q.payload IS NOT NULL AND EXISTS ( \
                    SELECT 1 FROM jsonb_array_elements(q.payload -> 'records') r, \
@@ -802,8 +811,8 @@ impl PgStore {
         .fetch_one(&mut *tx)
         .await?;
         let fact_rows: Vec<(Uuid, String)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-            "WITH d AS (DELETE FROM mh_memory m WHERE m.tenant = $1 AND m.metadata -> 'source_ids' ?| $2::text[] AND NOT {HELD_SQL} RETURNING m.id, m.subject, m.content), \
-             c AS (DELETE FROM mh_embed_cache c USING d WHERE c.hash = encode(sha256(convert_to($3 || d.content, 'UTF8')), 'hex')) \
+            "WITH d AS (DELETE FROM mh_memory m WHERE m.tenant = $1 AND m.metadata -> 'source_ids' ?| $2::text[] AND NOT {HELD_SQL} RETURNING m.id, m.subject, m.content, m.alt_hash), \
+             c AS (DELETE FROM mh_embed_cache c USING d WHERE c.hash = encode(sha256(convert_to($3 || d.content, 'UTF8')), 'hex') OR c.hash = d.alt_hash) \
              SELECT id, subject FROM d"
         )))
         .bind(tenant)
@@ -865,7 +874,7 @@ impl PgStore {
         if spec.kind != MemoryKind::Episodic || spec.scope.is_some() || spec.max_batches.is_some() {
             return Ok((0, 0));
         }
-        let cutoff = Utc::now() - chrono::Duration::days(days as i64);
+        let cutoff = Utc::now() - chrono::Duration::days(days.min(MAX_AGE_DAYS) as i64);
         let (mut dropped, mut removed) = (0u64, 0u64);
         for name in self.partitions().await? {
             let Some(month) = partition_month(&name) else { continue };
@@ -1047,6 +1056,16 @@ impl PgStore {
 
     pub(crate) async fn hold_one(&self, tenant: &str, id: Uuid) -> anyhow::Result<Option<LegalHold>> {
         sqlx::query("SELECT * FROM mh_legal_hold WHERE tenant = $1 AND id = $2").bind(tenant).bind(id).fetch_optional(&self.pool).await?.as_ref().map(hold_of).transpose()
+    }
+
+    /// Whether an active hold keeps this record itself.
+    pub(crate) async fn held_record(&self, tenant: &str, id: Uuid) -> anyhow::Result<bool> {
+        let held: Option<bool> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT {HELD_SQL} FROM mh_memory m WHERE m.tenant = $1 AND m.id = $2")))
+            .bind(tenant)
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(held.unwrap_or(false))
     }
 
     pub(crate) async fn held(&self, tenant: &str, scope: ForgetScope, value: &str) -> anyhow::Result<u64> {
@@ -1310,7 +1329,8 @@ impl PgStore {
         // row that cannot be applied leaves nothing applied.
         let mut tx = self.pool.begin().await?;
         // Retention writes a row per record: one event per tenant says how many, not one each.
-        let mut retention: BTreeMap<String, (u64, u64)> = BTreeMap::new();
+        // (By the row's own scope: an exact `record` or `record-reset` row is not a retention purge.)
+        let mut retention: BTreeMap<(String, String), (u64, u64)> = BTreeMap::new();
         for e in ordered {
             let k = key(e);
             if known.contains(&k) {
@@ -1360,7 +1380,7 @@ impl PgStore {
                 .execute(&mut *tx)
                 .await?;
             if e.scope == "retention" || e.scope.starts_with("record") {
-                let t = retention.entry(e.tenant.clone()).or_default();
+                let t = retention.entry((e.tenant.clone(), e.scope.clone())).or_default();
                 *t = (t.0 + 1, t.1 + removed);
             } else {
                 let a = AuditEntry {
@@ -1376,13 +1396,13 @@ impl PgStore {
             rep.applied += 1;
             rep.records_removed += removed;
         }
-        for (t, (entries, records)) in retention {
+        for ((t, scope), (entries, records)) in retention {
             let a = AuditEntry {
                 actor: actor.into(),
                 action: "deletion.reapply".into(),
                 subject: None,
                 memory_id: None,
-                detail: serde_json::json!({ "scope": "retention", "entries": entries, "records": records }),
+                detail: serde_json::json!({ "scope": scope, "entries": entries, "records": records }),
             };
             self.audit_in(&mut tx, &t, &a).await?;
         }

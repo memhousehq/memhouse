@@ -50,11 +50,12 @@ pub(crate) async fn restore_replay(base: &Engine) -> Outcome {
     let live = Scratch::create(base, "g22live").await?;
     let mut backup = None;
     let result = restore_scenario(base, &live, &mut backup).await;
-    if let Some(b) = backup {
-        b.drop().await?;
-    }
-    live.drop().await?;
-    result
+    // Both are dropped, whatever the first drop returns.
+    let dropped_backup = match backup {
+        Some(b) => b.drop().await,
+        None => Ok(()),
+    };
+    crate::gov2_checks::with_cleanup(result, [dropped_backup, live.drop().await])
 }
 
 async fn restore_scenario(base: &Engine, live: &Scratch, backup: &mut Option<Scratch>) -> Outcome {
@@ -254,7 +255,17 @@ async fn rls_scenario(base: &Engine, url: &str) -> Outcome {
     // statement it runs. Everything the service does must still work, on the session settings
     // it sets itself.
     let mut bound = "not run: this role cannot create one".to_string();
-    if other_role {
+    if !bypass {
+        // The login the suite runs as is itself bound by the policies: the service is run as
+        // it is, with no role to create (which such a login may not be allowed to grant).
+        match service_as_bound_role(base, url, options).await {
+            Ok((p, summary)) => {
+                problems.extend(p);
+                bound = summary;
+            }
+            Err(e) => problems.push(format!("the service as the login the policies bind: {e:#}")),
+        }
+    } else if other_role {
         let svc = format!("mh_svc_{}", &Uuid::new_v4().simple().to_string()[..12]);
         let mut admin = sqlx::PgConnection::connect(url).await?;
         // The role, and its membership in the owner (through which it owns the tables). The
@@ -269,13 +280,22 @@ async fn rls_scenario(base: &Engine, url: &str) -> Outcome {
         .await;
         // The session takes the role as it starts: every statement of the pool runs as it.
         let svc_url = format!("{url}{}options=-c%20role%3D{svc}", if url.contains('?') { '&' } else { '?' });
+        let setup_failed = setup.is_err();
         let outcome = match setup {
             Ok(()) => service_as_bound_role(base, &svc_url, options).await,
             Err(e) => Err(e.context("the service role could not be set up")),
         };
-        let _ = sqlx::raw_sql(sqlx::AssertSqlSafe(format!("DO $$ BEGIN EXECUTE format('REVOKE %I FROM {svc}', current_user); END $$; DROP OWNED BY {svc}; DROP ROLE {svc}")))
-            .execute(&mut admin)
-            .await;
+        // A role whose setup failed was never used and owns nothing: it is dropped as it is
+        // (the revoke below needs the right the grant lacked). A role that cannot be dropped
+        // is left in the cluster, and that is said.
+        let cleanup = if setup_failed {
+            format!("DROP ROLE IF EXISTS {svc}")
+        } else {
+            format!("DO $$ BEGIN EXECUTE format('REVOKE %I FROM {svc}', current_user); END $$; DROP OWNED BY {svc}; DROP ROLE {svc}")
+        };
+        if let Err(e) = sqlx::raw_sql(sqlx::AssertSqlSafe(cleanup)).execute(&mut admin).await {
+            problems.push(format!("the role {svc} made for this check could not be removed: {e}"));
+        }
         let _ = admin.close().await;
         match outcome {
             Ok((p, summary)) => {
@@ -446,7 +466,9 @@ async fn partition_scenario(base: &Engine, url: &str) -> Outcome {
     let with_structured = rows[0].memory.id;
     let fact = derived(&t, ep, rows[0].memory.id, words("part-fact", 0));
     let fact_id = fact.memory.id;
-    let fresh: Vec<NewMemory> = (0..2).map(|i| record(&t, ep, MemoryKind::Episodic, words("part-new", i), 0, |_| {})).collect();
+    // One time for both, so that they are in one month's partition whenever this runs.
+    let fresh_at = chrono::SubsecRound::trunc_subsecs(Utc::now(), 6);
+    let fresh: Vec<NewMemory> = (0..2).map(|i| record(&t, ep, MemoryKind::Episodic, words("part-new", i), 0, |m| (m.created_at, m.valid_from) = (fresh_at, fresh_at))).collect();
     let fresh_ids: Vec<Uuid> = fresh.iter().map(|r| r.memory.id).collect();
     let held_row = record(&t, held, MemoryKind::Episodic, words("part-held", 0), 70, |_| {});
     let held_id = held_row.memory.id;
@@ -584,10 +606,17 @@ type Received = Arc<Mutex<Vec<(chrono::DateTime<Utc>, String)>>>;
 
 /// A syslog receiver: one message per line.
 async fn syslog_sink(listener: tokio::net::TcpListener, into: Received) {
+    // The connections' readers belong to the listener: stopping it stops them too, so none
+    // adds to what was received after the receiver is "down".
+    let mut handlers = tokio::task::JoinSet::new();
     loop {
-        let Ok((mut stream, _)) = listener.accept().await else { return };
+        let accepted = tokio::select! {
+            a = listener.accept() => a,
+            Some(_) = handlers.join_next(), if !handlers.is_empty() => continue,
+        };
+        let Ok((mut stream, _)) = accepted else { return };
         let into = into.clone();
-        tokio::spawn(async move {
+        handlers.spawn(async move {
             let mut text = String::new();
             let _ = stream.read_to_string(&mut text).await;
             let at = Utc::now();
@@ -602,11 +631,16 @@ type Refused = Arc<Mutex<Option<String>>>;
 /// An OTLP/HTTP collector: takes the body of each request and answers 200, or 400 for a body
 /// it was told to refuse.
 async fn otlp_sink(listener: tokio::net::TcpListener, into: Received, refused: Refused) {
+    let mut handlers = tokio::task::JoinSet::new();
     loop {
-        let Ok((mut stream, _)) = listener.accept().await else { return };
+        let accepted = tokio::select! {
+            a = listener.accept() => a,
+            Some(_) = handlers.join_next(), if !handlers.is_empty() => continue,
+        };
+        let Ok((mut stream, _)) = accepted else { return };
         let into = into.clone();
         let refused = refused.lock().unwrap().clone();
-        tokio::spawn(async move {
+        handlers.spawn(async move {
             let mut buf = vec![];
             let mut chunk = [0u8; 8192];
             let (mut head_end, mut length) = (None, 0usize);
@@ -657,7 +691,14 @@ fn otlp_ids(bodies: &[(chrono::DateTime<Utc>, String)]) -> anyhow::Result<Vec<i6
     let mut ids = vec![];
     for (_, body) in bodies {
         let v: serde_json::Value = serde_json::from_str(body)?;
-        for r in v["resourceLogs"][0]["scopeLogs"][0]["logRecords"].as_array().into_iter().flatten() {
+        // Every record of the request, in whichever resource and scope it is.
+        let records = v["resourceLogs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .flat_map(|r| r["scopeLogs"].as_array().into_iter().flatten())
+            .flat_map(|s| s["logRecords"].as_array().into_iter().flatten());
+        for r in records {
             // Exactly one audit id that reads as one: a record without it is not passed over.
             let found: Vec<Option<i64>> = r["attributes"]
                 .as_array()
@@ -802,6 +843,12 @@ pub(crate) async fn siem_export(base: &Engine, url: String) -> Outcome {
     received(|| otlp_ids(&bodies.lock().unwrap()).map_or(0, |i| i.len()), all.len() + kept.len()).await;
     // Everything the collector took since the start: every earlier event once, the tail without
     // the refused one, and nothing sent again.
+    // The syslog receiver refuses nothing: it has every earlier event and the whole tail, once.
+    received(|| lines.lock().unwrap().len(), all.len() + tail.len()).await;
+    let syslog_all = sorted(external_ids(&lines.lock().unwrap()));
+    if syslog_all != sorted(all.iter().chain(tail.iter()).copied().collect()) {
+        problems.push(format!("while the collector refused one event the syslog receiver has {} events ({} expected, each once)", syslog_all.len(), all.len() + tail.len()));
+    }
     let otlp_all = sorted(otlp_ids(&bodies.lock().unwrap())?);
     let want_all = sorted(all.iter().chain(kept.iter()).copied().collect());
     let otlp_tail: Vec<i64> = otlp_all.iter().copied().filter(|i| tail.contains(i)).collect();
@@ -853,7 +900,18 @@ pub(crate) async fn evidence_export(base: &Engine, url: String) -> Outcome {
     let out = dir.0.join("bundle");
     let manifest = ops::evidence_export(&e, &out, None, "bench").await?;
     let read = |name: &str| std::fs::read_to_string(out.join(name)).unwrap_or_default();
-    let mut everything = String::new();
+    // The manifest a reader of the bundle has is the one on disk: the files are checked
+    // against it, and it is scanned with them.
+    let manifest_text = read("manifest.json");
+    let returned = manifest;
+    let manifest: ops::EvidenceManifest = serde_json::from_str(&manifest_text)?;
+    if manifest.files.iter().map(|f| (&f.file, &f.sha256, f.bytes)).collect::<Vec<_>>() != returned.files.iter().map(|f| (&f.file, &f.sha256, f.bytes)).collect::<Vec<_>>()
+        || manifest.export != returned.export
+        || manifest.export.is_empty()
+    {
+        problems.push("manifest.json on disk is not the manifest the export returned".into());
+    }
+    let mut everything = manifest_text.clone();
     for f in &manifest.files {
         let text = read(&f.file);
         if text.len() < 3 || hex::encode(<sha2::Sha256 as sha2::Digest>::digest(text.as_bytes())) != f.sha256 || text.len() as u64 != f.bytes {
@@ -874,7 +932,12 @@ pub(crate) async fn evidence_export(base: &Engine, url: String) -> Outcome {
         let files = entry.and_then(|l| l["evidence"].as_array()).cloned().unwrap_or_default();
         let complete = !files.is_empty()
             && files.iter().all(|f| f["sha256"].as_str().is_some_and(|s| manifest.files.iter().any(|m| Some(m.file.as_str()) == f["file"].as_str() && m.sha256 == s)))
-            && entry.is_some_and(|l| l["soc2"].as_array().is_some_and(|a| !a.is_empty()) && l["iso27001"].as_array().is_some_and(|a| !a.is_empty()));
+            // Both mappings, and exactly the product's: not any non-empty list.
+            && entry.is_some_and(|l| {
+                let listed = |k: &str| l[k].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect::<std::collections::BTreeSet<_>>());
+                let (soc2, iso): (std::collections::BTreeSet<&str>, std::collections::BTreeSet<&str>) = (c.soc2.iter().copied().collect(), c.iso27001.iter().copied().collect());
+                !soc2.is_empty() && !iso.is_empty() && listed("soc2") == Some(soc2) && listed("iso27001") == Some(iso)
+            });
         if !complete {
             without.push(c.id);
         }

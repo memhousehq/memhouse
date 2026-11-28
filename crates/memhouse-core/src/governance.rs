@@ -488,8 +488,13 @@ pub struct RetentionReport {
     pub resumed: bool,
     /// False when a bound stopped the pass early; the next pass continues the same run.
     pub complete: bool,
-    /// Held deletions carried out because their hold was released.
+    /// Open deletions completed by this pass (their hold was released, they were interrupted,
+    /// or they waited for a clean probe).
     pub deletions_completed: u64,
+    /// Open deletions this pass could not carry out; they stay open and are tried again.
+    pub deletions_failed: u64,
+    /// Another retention pass of the tenant was running: this one did nothing.
+    pub busy: bool,
 }
 
 impl Engine {
@@ -558,8 +563,8 @@ impl Engine {
         };
         // The release is committed whatever happens next: a failure to carry the kept deletions
         // out is reported beside it, not instead of it (the next retention pass tries again).
-        match self.resume_deletions(tenant).await {
-            Ok(resumed) => Ok((released, resumed, None)),
+        match self.resume_deletions_all(tenant).await {
+            Ok((resumed, failed)) => Ok((released, resumed, (!failed.is_empty()).then(|| failed.join("; ")))),
             Err(e) => Ok((released, vec![], Some(format!("{e:#}")))),
         }
     }
@@ -572,6 +577,15 @@ impl Engine {
     /// or one a restart interrupted. A deletion is idempotent, and its certificate and audit
     /// event are written once, with its completion (TR-WF-02). Returns those that changed.
     pub async fn resume_deletions(&self, tenant: &str) -> anyhow::Result<Vec<DeletionRequest>> {
+        let (changed, failed) = self.resume_deletions_all(tenant).await?;
+        anyhow::ensure!(failed.is_empty(), "{} of the open deletions could not be carried out: {}", failed.len(), failed.join("; "));
+        Ok(changed)
+    }
+
+    /// [`Engine::resume_deletions`], with the requests that failed beside those that changed:
+    /// one request that cannot be carried out now (its policy cannot be read, a statement
+    /// fails) does not keep the pass from the ones after it. It stays open and is tried again.
+    pub async fn resume_deletions_all(&self, tenant: &str) -> anyhow::Result<(Vec<DeletionRequest>, Vec<String>)> {
         // One recovery pass per tenant at a time (a retention pass and a hold release may
         // coincide, also in two processes): two passes over one request could each see the
         // other's deletion as "nothing left to delete".
@@ -579,23 +593,31 @@ impl Engine {
         if !self.store.keeps_state() {
             return self.resume_deletions_locked(tenant, None).await;
         }
-        let key = format!("deletions.resume.{tenant}");
+        let Some(lease) = self.lease_take(format!("deletions.resume.{tenant}")).await? else { return Ok((vec![], vec![])) };
+        let result = self.resume_deletions_locked(tenant, Some(&lease)).await;
+        self.lease_release(&lease).await;
+        result
+    }
+
+    /// Take a lease kept in the store's state, if it is free (never taken, given back, or
+    /// lapsed). A lookup or a compare-and-set that fails is not a lease: the error is returned.
+    async fn lease_take(&self, key: String) -> anyhow::Result<Option<RecoveryLease>> {
         let holder = Uuid::new_v4().to_string();
         let now = Utc::now().timestamp();
-        // A lookup or a compare-and-set that fails is not a lease: the pass does not run.
         let current = self.store.state_get(&key).await?;
         let free = current.as_deref().and_then(|c| c.split_once('|')).is_none_or(|(_, until)| until.parse::<i64>().map_or(true, |u| u < now));
         let value = format!("{holder}|{}", now + RECOVERY_LEASE_SECS);
         if !free || !self.store.state_cas(&key, current.as_deref(), &value).await? {
-            return Ok(vec![]);
+            return Ok(None);
         }
-        let lease = RecoveryLease { key, holder, value: std::sync::Mutex::new(value) };
-        let result = self.resume_deletions_locked(tenant, Some(&lease)).await;
-        // Given back only while it is still this pass's: a lease another pass took after this
-        // one's lapsed is not cleared.
+        Ok(Some(RecoveryLease { key, holder, value: std::sync::Mutex::new(value) }))
+    }
+
+    /// Give a lease back, only while it is still this holder's: one another pass took after
+    /// this one's lapsed is not cleared.
+    async fn lease_release(&self, lease: &RecoveryLease) {
         let mine = lease.value.lock().unwrap().clone();
         let _ = self.store.state_cas(&lease.key, Some(&mine), &format!("{}|0", lease.holder)).await;
-        result
     }
 
     /// Renew the recovery lease; false when it is no longer this pass's (it lapsed and another
@@ -614,8 +636,9 @@ impl Engine {
         Ok(held)
     }
 
-    async fn resume_deletions_locked(&self, tenant: &str, lease: Option<&RecoveryLease>) -> anyhow::Result<Vec<DeletionRequest>> {
+    async fn resume_deletions_locked(&self, tenant: &str, lease: Option<&RecoveryLease>) -> anyhow::Result<(Vec<DeletionRequest>, Vec<String>)> {
         let mut out = vec![];
+        let mut failed = vec![];
         // Every open request, oldest first, page by page: none is out of reach behind others.
         let mut after = None;
         'pages: loop {
@@ -634,13 +657,19 @@ impl Engine {
                     break 'pages;
                 }
                 let before = (d.status, d.deleted);
-                self.run_deletion(&mut d, lease).await?;
+                // A request that fails is said and left open for the next pass; the ones
+                // after it are still carried out.
+                if let Err(e) = self.run_deletion(&mut d, lease).await {
+                    tracing::warn!("deletion {} ({} {}) could not be carried out in this pass: {e:#}", d.id, d.scope.as_str(), d.value);
+                    failed.push(format!("deletion {} ({}): {e:#}", d.id, d.scope.as_str()));
+                    continue;
+                }
                 if (d.status, d.deleted) != before {
                     out.push(d);
                 }
             }
         }
-        Ok(out)
+        Ok((out, failed))
     }
 
     /// One execution of a deletion request: delete what no hold keeps, then either complete it
@@ -705,6 +734,23 @@ impl Engine {
             } else {
                 self.store.deletion_put(d).await?;
             }
+            return Ok(());
+        }
+        // Whether the erasure is finished is asked of the store, not of the sample: a record
+        // the request matches that is still there (one a hold kept during the execution and
+        // released since, outside the fifty sampled) leaves the request open, to be carried
+        // out again. The probe below verifies the representations of what was sampled.
+        let remaining = match d.scope {
+            ForgetScope::Record => match d.value.parse::<Uuid>() {
+                Ok(id) => self.store.get(&d.tenant, id).await?.is_some() as u64,
+                Err(_) => 0,
+            },
+            _ => self.store.forget_count(&d.tenant, d.scope, &d.value).await?,
+        };
+        if remaining > 0 {
+            d.status = DeletionStatus::Running;
+            d.certificate = None;
+            self.store.deletion_put(d).await?;
             return Ok(());
         }
         let found = self.store.canary_probe(&d.tenant, &d.canaries).await?;
@@ -840,6 +886,21 @@ impl Engine {
     /// interrupted is continued; each rule's `retention.purge` event is written once, with the
     /// records of every attempt.
     pub async fn retention_run(&self, limits: RetentionLimits) -> anyhow::Result<RetentionReport> {
+        // One pass per tenant at a time: two passes that shared a run could each close a step
+        // with a count the other was still adding to. A store without durable state has one
+        // process and no lease to take.
+        if !self.store.keeps_state() {
+            return self.retention_pass(limits, None).await;
+        }
+        let Some(lease) = self.lease_take(format!("retention.run.{}", self.cfg.memory.tenant)).await? else {
+            return Ok(RetentionReport { busy: true, ..Default::default() });
+        };
+        let result = self.retention_pass(limits, Some(&lease)).await;
+        self.lease_release(&lease).await;
+        result
+    }
+
+    async fn retention_pass(&self, limits: RetentionLimits, lease: Option<&RecoveryLease>) -> anyhow::Result<RetentionReport> {
         let tenant = self.cfg.memory.tenant.clone();
         let mut report = RetentionReport { complete: true, ..Default::default() };
         let days = self.cfg.telemetry.explanation_retention_days;
@@ -877,6 +938,12 @@ impl Engine {
                 report.purged += run.count(&step);
                 continue;
             }
+            // Renewed before every rule: a pass that lost its lease stops, and the run stays
+            // open for the pass that holds it.
+            if !self.lease_held(lease).await? {
+                report.complete = false;
+                return Ok(report);
+            }
             spec.run = Some((run.id, step.clone()));
             spec.max_batches = limits.max_batches;
             let out = self.store.purge(&tenant, &spec).await?;
@@ -900,10 +967,18 @@ impl Engine {
                 detail["held"] = json!(out.held);
             }
             let audit = (total > 0).then(|| AuditEntry { actor: "system".into(), action: "retention.purge".into(), subject: None, memory_id: None, detail });
-            self.store.job_step_done(run.id, &step, audit.as_ref()).await?;
+            if self.store.keeps_state() {
+                self.store.job_step_done(run.id, &step, audit.as_ref()).await?;
+            } else if let Some(a) = &audit {
+                // A store without durable runs has no step to close with the event: the event
+                // is written directly, as before G22, so a purge is never without its record.
+                self.store.audit(&a.actor, &a.action, &tenant, None, None, a.detail.clone()).await?;
+            }
         }
         self.store.job_finish(run.id).await?;
-        report.deletions_completed = self.resume_deletions(&tenant).await?.iter().filter(|d| d.status == DeletionStatus::Completed).count() as u64;
+        let (resumed, failed) = self.resume_deletions_all(&tenant).await?;
+        report.deletions_completed = resumed.iter().filter(|d| d.status == DeletionStatus::Completed).count() as u64;
+        report.deletions_failed = failed.len() as u64;
         if report.expired + report.purged + report.deletions_completed > 0 {
             self.working.clear();
         }

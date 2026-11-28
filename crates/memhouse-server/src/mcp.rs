@@ -492,7 +492,8 @@ async fn call_legacy(c: &Caller, name: &str, args: &Value) -> anyhow::Result<(St
                 Ok(r) if r.deleted == 0 && r.held > 0 => {
                     return Ok((
                         format!("Memory {id} is under a legal hold and was not deleted; it is deleted when the hold is released"),
-                        json!({ "deleted": false, "held": true }),
+                        // `held` is a count in every answer that has it (here the record itself).
+                        json!({ "deleted": false, "held": r.held }),
                     ));
                 }
                 // Deleted, but a hold keeps something derived or promoted from it: said too.

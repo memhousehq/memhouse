@@ -105,7 +105,7 @@ pub(crate) async fn run(engine: &Engine) -> Vec<Check> {
         (
             "siem_export",
             "GOV-15 (G22)",
-            "Audit events reach a syslog receiver as CEF and an OTLP collector as logs within 60 seconds, each once and in order, without memory content; the events of a receiver that is down are sent when it is back",
+            "Audit events reach a syslog receiver as CEF and an OTLP collector as logs within 60 seconds, each once, without memory content; the events of a receiver whose failure the exporter detects are sent when it is back",
             scratched(engine, "siem", crate::gov2_ops_checks::siem_export).await,
         ),
         (
@@ -117,7 +117,7 @@ pub(crate) async fn run(engine: &Engine) -> Vec<Check> {
         (
             "pii_actions",
             "GOV-05 (G22)",
-            "Of 2,000 labelled items in the Must categories at least 98% are detected and none is stored as written; a category is redacted, masked to its last four characters or rejected as configured, and a policy can only make that stricter",
+            "Of 2,000 labelled items in the Must categories at least 98% are detected and none of the 200 sent through the write path is stored as written; a category is redacted, masked to its last four characters or rejected as configured, and a policy can only make that stricter",
             scratched(engine, "pii", crate::gov2_ops_checks::pii_actions).await,
         ),
     ];
@@ -138,8 +138,18 @@ where
 {
     let scratch = Scratch::create(engine, &format!("g22{suffix}")).await?;
     let result = scenario(engine, scratch.url.clone()).await;
-    scratch.drop().await?;
-    result
+    with_cleanup(result, [scratch.drop().await])
+}
+
+/// A scenario's outcome with what its cleanup returned: a cleanup that fails is an error of
+/// its own, and is said beside the scenario's error, not instead of it.
+pub(crate) fn with_cleanup<T>(result: anyhow::Result<T>, cleanups: impl IntoIterator<Item = anyhow::Result<()>>) -> anyhow::Result<T> {
+    let failed: Vec<String> = cleanups.into_iter().filter_map(|c| c.err()).map(|e| format!("{e:#}")).collect();
+    match (result, failed.is_empty()) {
+        (result, true) => result,
+        (Ok(_), false) => Err(anyhow::anyhow!("the scenario's cleanup failed: {}", failed.join("; "))),
+        (Err(e), false) => Err(e.context(format!("the scenario failed, and so did its cleanup: {}", failed.join("; ")))),
+    }
 }
 
 /// An engine on a scratch database with a stand-in embedder, under a configuration of the
@@ -284,10 +294,30 @@ async fn legal_hold(base: &Engine, url: String) -> Outcome {
     if requests.iter().any(|r| r.is_none()) {
         problems.push(format!("{} of 5 held forgets answered without a deletion id", requests.iter().filter(|r| r.is_none()).count()));
     }
-    for id in requests.iter().flatten() {
+    // Each its own request, for what that forget asked: one id answered twice would let one
+    // request stand in for another below.
+    let asked = [
+        (ForgetScope::Subject, a.to_string()),
+        (ForgetScope::Source, "court-import".to_string()),
+        (ForgetScope::Subject, c.to_string()),
+        (ForgetScope::User, "user:lee".to_string()),
+        (ForgetScope::Record, one_of_a.to_string()),
+    ];
+    if requests.iter().flatten().collect::<HashSet<_>>().len() != requests.iter().flatten().count() {
+        problems.push("two held forgets answered with the same deletion id".into());
+    }
+    for (id, (scope, value)) in requests.iter().zip(&asked) {
+        let Some(id) = id else { continue };
         let d = e.deletion(T, *id).await?;
-        if d.status != DeletionStatus::Held || d.certificate.is_some() {
-            problems.push(format!("deletion {} under hold is {:?} with a certificate: {}", d.scope.as_str(), d.status, d.certificate.is_some()));
+        if d.status != DeletionStatus::Held || d.certificate.is_some() || d.scope != *scope || d.value != *value {
+            problems.push(format!(
+                "the deletion of a held forget by {} {value} is by {} {}, {:?}, with a certificate: {}",
+                scope.as_str(),
+                d.scope.as_str(),
+                d.value,
+                d.status,
+                d.certificate.is_some()
+            ));
         }
     }
 
@@ -382,6 +412,26 @@ async fn legal_hold(base: &Engine, url: String) -> Outcome {
             chain_done.as_ref().map(|d| d.status),
             chain_done.as_ref().map(|d| d.deleted)
         ));
+    }
+    // A hold in the middle: A was promoted to B and B to C, and only B is held. Forgetting A
+    // takes A and C; a hold on a record is not a hold on what was promoted from it.
+    let m_top = record(&t, chain, MemoryKind::Semantic, words("mid", 0), 0, |_| {});
+    let m_mid = record(&t, chain, MemoryKind::Semantic, words("mid", 1), 0, |m| {
+        m.metadata = json!({ "promoted_from": [m_top.memory.id.to_string()] });
+        m.source = "mid-import".into();
+    });
+    let m_low = record(&t, chain, MemoryKind::Semantic, words("mid", 2), 0, |m| m.metadata = json!({ "promoted_from": [m_mid.memory.id.to_string()] }));
+    let (m_top_id, m_mid_id) = (m_top.memory.id, m_mid.memory.id);
+    e.store.insert(&[m_top, m_mid, m_low]).await?;
+    let h_mid = e.hold_place(T, "source", "mid-import", "matter 2026-22", "counsel").await?;
+    let cut_mid = e.forget_by(forget(|r| r.id = Some(m_top_id))).await?;
+    let kept_mid: Vec<Uuid> = ids_of(&e, chain).await?.into_iter().collect();
+    if cut_mid.held != 1 || kept_mid != [m_mid_id] {
+        problems.push(format!("a hold on the middle of two promotions: {} held (1 expected), {} records left (only the held one expected)", cut_mid.held, kept_mid.len()));
+    }
+    let (_, _, failed_mid) = e.hold_release(T, h_mid.id, "counsel").await?;
+    if failed_mid.is_some() || !ids_of(&e, chain).await?.is_empty() {
+        problems.push(format!("after the release of a hold on the middle of two promotions: {} records left (none expected)", ids_of(&e, chain).await?.len()));
     }
     // An explanation of a recall is written after the recall returns: one that arrives after
     // its subject was erased is not stored; another subject's is.
@@ -527,7 +577,12 @@ async fn source_purge(base: &Engine, url: String) -> Outcome {
     let after_one = ids_of(&e, s2).await?;
     let rest = e.forget_by(forget(|r| r.untrusted = Some("*".into()))).await?;
     let after_all = ids_of(&e, s2).await?;
-    let left_one = held.iter().filter(|id| after_one.contains(id)).count();
+    // Which ones, not only how many: the two of the other source.
+    let survivors: Vec<Uuid> = held.iter().filter(|id| after_one.contains(id)).copied().collect();
+    if survivors != held[3..] {
+        problems.push("the purge of one untrusted source did not leave exactly the other source's candidates".into());
+    }
+    let left_one = survivors.len();
     let left_all = held.iter().filter(|id| after_all.contains(id)).count();
     if (one.deleted, left_one, rest.deleted, left_all) != (3, 2, 2, 0) || !after_all.contains(&trusted.id) || !after_all.contains(&injected.id) {
         problems.push(format!(
@@ -756,8 +811,9 @@ async fn retention_scopes(base: &Engine, url: String) -> Outcome {
     }
     // A second pass finds nothing more.
     let again = e.retention_run(Default::default()).await?;
-    if again.purged != 0 {
-        problems.push(format!("a second pass purged {} more records", again.purged));
+    let events_after = events(&e, "retention.purge").await?;
+    if again.purged != 0 || events_after.iter().map(|a| a.id).collect::<Vec<_>>() != purge_events.iter().map(|a| a.id).collect::<Vec<_>>() {
+        problems.push(format!("a second pass purged {} more records and left {} purge events ({} before it)", again.purged, events_after.len(), purge_events.len()));
     }
     verdict(
         problems,
@@ -783,7 +839,10 @@ async fn retention_resume(base: &Engine, url: String) -> Outcome {
     // The pass is stopped after one batch of its rule: what a killed worker leaves.
     let first = e.retention_run(RetentionLimits { max_batches: Some(1) }).await?;
     let mid = ids_of(&e, s).await?.len();
-    if first.complete || first.purged == 0 || mid == 0 || !events(&e, "retention.purge").await?.is_empty() {
+    // (Counted in the store: a listing is capped.)
+    let stored_mid = e.store.forget_count(T, ForgetScope::Subject, s).await? as usize;
+    // What the stopped pass says it purged is what is gone (rounds, and facts that went with them).
+    if first.complete || first.purged == 0 || mid == 0 || first.purged as usize + stored_mid != ROUNDS + facts.len() || !events(&e, "retention.purge").await?.is_empty() {
         problems.push(format!("the bounded pass: complete {}, {} purged, {mid} records left, {} events", first.complete, first.purged, events(&e, "retention.purge").await?.len()));
     }
     drop(e);
@@ -797,6 +856,11 @@ async fn retention_resume(base: &Engine, url: String) -> Outcome {
     let ledger = e.store.ledger_export().await?;
     let ledgered: Vec<Uuid> = ledger.iter().filter(|l| l.scope == "retention").filter_map(|l| l.memory_id).collect();
     let distinct: HashSet<&Uuid> = ledgered.iter().collect();
+    // The rows are the rounds' own: every round once, no other record, none without an id.
+    let round_ids: HashSet<Uuid> = rounds.iter().map(|r| r.memory.id).collect();
+    if ledger.iter().any(|l| l.scope == "retention" && l.memory_id.is_none()) || ledgered.iter().copied().collect::<HashSet<Uuid>>() != round_ids {
+        problems.push("the retention rows of the ledger are not exactly the purged rounds".into());
+    }
     let total = (ROUNDS + facts.len()) as u64;
     if !second.resumed
         || !second.complete
@@ -930,6 +994,45 @@ async fn retention_resume(base: &Engine, url: String) -> Outcome {
             closed.certificate.as_ref().map(|c| (c.verified, c.records_deleted, c.executions)),
             ids_of(&e, residue).await?.len()
         ));
+    }
+    // A request that cannot be carried out (here one that names no record) does not keep the
+    // pass from a later one: it is reported and stays open, the other is completed.
+    let later = "resume:later";
+    e.store.insert(&[record(&t, later, MemoryKind::Semantic, words("later", 0), 0, |_| {})]).await?;
+    let request = |scope: ForgetScope, value: &str, minutes: i64| DeletionRequest {
+        id: Uuid::new_v4(),
+        tenant: T.into(),
+        scope,
+        value: value.into(),
+        actor: "dpo".into(),
+        requested_at: Utc::now() - chrono::Duration::minutes(minutes),
+        status: DeletionStatus::Running,
+        completed_at: None,
+        deleted: 0,
+        held: 0,
+        executions: 0,
+        canaries: vec![],
+        certificate: None,
+    };
+    let (broken, after_it) = (request(ForgetScope::Record, "not-a-record-id", 60), request(ForgetScope::Subject, later, 30));
+    e.store.deletion_put(&broken).await?;
+    e.store.deletion_put(&after_it).await?;
+    let (carried, failures) = e.resume_deletions_all(T).await?;
+    if failures.len() != 1
+        || carried.iter().map(|d| d.id).collect::<Vec<_>>() != [after_it.id]
+        || e.deletion(T, after_it.id).await?.status != DeletionStatus::Completed
+        || e.deletion(T, broken.id).await?.status == DeletionStatus::Completed
+        || !ids_of(&e, later).await?.is_empty()
+    {
+        problems.push(format!("a pass with one request that fails: {} failures (1 expected), {} carried out (the one after it expected)", failures.len(), carried.len()));
+    }
+    // One retention pass per tenant at a time: while another holds the lease this one does nothing.
+    let run_lease = format!("retention.run.{T}");
+    e.store.state_put(&run_lease, &format!("another-pass|{}", Utc::now().timestamp() + 600)).await?;
+    let busy = e.retention_run(Default::default()).await?;
+    e.store.state_put(&run_lease, "another-pass|1").await?;
+    if !busy.busy || busy.purged + busy.expired + busy.deletions_completed != 0 {
+        problems.push(format!("a retention pass while another holds the lease: busy {}, {} purged", busy.busy, busy.purged));
     }
     let mut certs = 0;
     for id in &open {

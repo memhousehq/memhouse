@@ -728,7 +728,15 @@ impl Engine {
             // anything is queued, rather than dropping the round unredacted or unseen.
             let (text, redactions) = match self.redact(policy, truncate_chars(&r.text, policy.policy.write_gate.max_content_chars)).await {
                 Ok(v) => v,
-                Err(e) if error::code_of(&e) == error::ErrorCode::InvalidRequest => continue,
+                // A round without text is passed over. One the policy refuses (a category set
+                // to `reject`) is left out too, and counted: the answer says how many rounds
+                // of the conversation were not stored.
+                Err(e) if error::code_of(&e) == error::ErrorCode::InvalidRequest => {
+                    if !r.text.trim().is_empty() {
+                        out.refused += 1;
+                    }
+                    continue;
+                }
                 Err(e) => return Err(e),
             };
             // Scoped rounds (an agent-private conversation) are their scope's own records: two
@@ -914,6 +922,8 @@ impl Engine {
         let rank = &policy.policy.ranking;
         let denied_labels = ctx.denied_labels.clone();
         let start = Instant::now();
+        // The time the recall is dated by: taken before anything of the subject is read.
+        let started_at = Utc::now();
         let tenant = self.tenant(&req.tenant);
         let subject = self.subject(&req.subject);
         let k = req.k.unwrap_or(rank.default_k).clamp(1, 200);
@@ -1318,7 +1328,9 @@ impl Engine {
             metrics::observe("memhouse_recall_statements", &[], statements as f64);
             let record = RecallRecord {
                 recall_id,
-                at: Utc::now(),
+                // When the recall began, before anything of the subject was read: it is what
+                // the store compares with an erasure of the subject (`recall_put`).
+                at: started_at,
                 tenant: tenant.clone(),
                 subject: subject.clone(),
                 principal: ctx.principal,
@@ -1590,10 +1602,17 @@ impl Engine {
         let mut held_target = false;
         if scope == ForgetScope::Record {
             let id = req.id.expect("named");
-            self.settle_record(&tenant, id).await?;
+            // A preview changes nothing: a record still queued is not claimed, embedded and
+            // committed for it. Only an execution settles the record first.
+            if !req.dry_run {
+                self.settle_record(&tenant, id).await?;
+            }
             let mem = self.get_record(&tenant, id).await?.ok_or_else(|| error::not_found(format!("memory {id} not found")))?;
             if req.dry_run {
-                held_target = self.store.legal_holds(&tenant, true).await?.iter().any(|h| h.holds(&mem));
+                // Asked of the store for this record, not looked up in a list of holds (which
+                // is capped): the record is held when the count of held matches of a forget
+                // by its id is larger than the count of its held dependents.
+                held_target = self.store.record_held(&tenant, id).await?;
             }
             key_subject = mem.subject;
         }
@@ -1630,7 +1649,15 @@ impl Engine {
             // An id is only given out for a request the store keeps: on a store without the
             // deletion workflow the erasure is carried out as before, without a certificate.
             let durable = self.store.deletion_get(&tenant, d.id).await?.is_some();
-            self.run_deletion(&mut d, None).await?;
+            if durable {
+                self.run_deletion(&mut d, None).await?;
+            } else {
+                // No workflow, no certificate and no `deletion.certificate` event: such a
+                // store cannot sample or probe, so nothing would stand behind "verified".
+                d.deleted = self.execute_forget(&tenant, scope, &value, &actor).await?;
+                self.deleted.notify_waiters();
+                d.held = self.store.held_count(&tenant, scope, &value).await?;
+            }
             if scope == ForgetScope::Record && d.deleted == 0 && d.held == 0 {
                 // Gone between the lookup and the deletion: nothing was asked of the workflow.
                 return Err(error::not_found(format!("memory {value} not found")));

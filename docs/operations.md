@@ -531,14 +531,20 @@ re-applies it. To keep that window small and known:
 
 A ledger row says how it is re-applied: `memory` (a record with what was derived and promoted
 from it), `retention` (a record with its derived facts), `subject`, `tenant`, and `record`: one
-record exactly, nothing it led to. `record` rows are what a deletion writes when a legal hold
-cut its cascade short (part of a subject erased, a derived fact kept), so that a replay takes
-what went then and not what the hold kept; `record-reset` is the same for a reset that leaves
-the caches.
+stored record exactly, and no stored record it led to. `record` rows are what a deletion writes
+when a legal hold cut its cascade short (part of a subject erased, a derived fact kept), so
+that a replay takes what went then and not what the hold kept; `record-reset` is the same for
+a reset that leaves the caches. What is still *queued* is another matter: a replay of a
+`record` row also takes the record's own queued copy out of its proposal and removes queued
+promotions of it, so those proposals do not survive a restore.
 
 Legal holds do not stop a replay: the ledger says what was deleted, and a hold that the backup
-brought back is no reason to bring the data back with it. A hold *placed* after the backup is
-not in the restored database: place it again.
+brought back is no reason to bring the data back with it. The restored database has the
+holds as they were when the backup was taken, so reconcile them with your hold history before
+serving, in both directions: a hold *placed* after the backup is missing (place it again), and
+a hold *released* after the backup is active again (release it again, or it keeps exempting
+its data from retention and deletion). `memhouse hold list` shows what the database has; the
+`hold.place` and `hold.release` events in your SIEM show what happened since.
 
 **The restore guard.** `memhouse serve` remembers, under `MEMHOUSE_HOME/state/`, the newest
 audit event of the database it serves (written at start, every minute, and at shutdown). When
@@ -579,10 +585,13 @@ table that holds memory content or what is derived from it (`mh_memory` and its 
 - a row is visible to a session whose settings name its tenant (`memhouse.tenant`) and, if the
   session names one, its subject (`memhouse.subject`);
 - the service sets those settings itself. Recall, the reads of a record and of a list run on a
-  connection narrowed to the request's tenant and subject, and writes and deletions in a
-  transaction narrowed to the tenant, so a statement that lost its own filter still reads and
-  writes nothing else. The service's maintenance work (queues, retention across subjects,
-  migrations) runs in a *service scope* that only the role owning the tables can take;
+  connection narrowed to the request's tenant and subject, and writes in a transaction
+  narrowed to the tenant, so a statement that lost its own filter still reads and writes
+  nothing else. Erasure is not narrowed that way: a deletion follows a record to what was
+  derived and promoted from it and to shared caches, so it runs, like the service's
+  maintenance work (queues, retention across subjects, migrations), in a *service scope* that
+  only the role owning the tables can take, and relies on the tenant filter of each of its
+  own statements;
 - a connection that did not come through the service has neither: it reads nothing.
 
 ```sql
@@ -684,8 +693,10 @@ otlp_headers_env = { authorization = "SIEM_TOKEN" }
 - An OTLP collector that refuses a batch as such (HTTP 400, 413 or 422) gets it again in
   halves; an event it refuses even alone is skipped, so that it does not hold back every later
   one, and is named by its audit id in the service log and in the export's status (`skipped`,
-  `errors`). Any other failure (the receiver down, a refused credential, a redirect, which is
-  not followed) is retried.
+  `errors`). Only that case names the event: records a collector rejects inside a successful
+  answer are reported as a count for the batch (the answer does not say which they were), and
+  an answer that breaks off is reported as "unknown". Any other failure (the receiver down, a
+  refused credential, a redirect, which is not followed) is retried.
 - A receiver's address is a scheme, a host, a port and, for OTLP, a path: a user, a password,
   a query or a fragment in it is refused at start. Credentials go in `otlp_headers_env`.
 - The export starts with the events written after it is first turned on.

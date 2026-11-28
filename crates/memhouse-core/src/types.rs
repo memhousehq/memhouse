@@ -1083,12 +1083,20 @@ pub struct IngestResult {
     pub quarantined: usize,
     /// Rounds already stored, skipped.
     pub deduplicated: usize,
+    /// Rounds left out because the policy refuses them (a category set to `reject`, or text
+    /// over the limit): not stored, not queued. The other rounds are.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub refused: usize,
     /// Ids of the rounds stored (or queued).
     pub ids: Vec<Uuid>,
     /// True while the rounds are still in the intake queue (the request did not set `wait`):
     /// their ids resolve to `candidate` until the pipeline has stored them.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub queued: bool,
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, JsonSchema)]

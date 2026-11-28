@@ -347,20 +347,28 @@ impl SqliteStore {
             )?;
         }
         let Some(subject) = subject else { return Ok(None) };
-        let mut kept_held = respect_holds && !self.held_dependents(c, tenant, &[id], true, promotions)?.is_empty();
+        let mut held = if respect_holds { self.held_dependents(c, tenant, &[id], true, promotions)? } else { vec![] };
+        let mut kept_held = !held.is_empty();
         let mut level = self.delete_dependents(c, tenant, &[id], true, promotions, respect_holds)?;
-        while !level.is_empty() {
+        let mut seen: std::collections::HashSet<Uuid> = std::collections::HashSet::from([id]);
+        loop {
             gone.extend(level.iter().copied());
-            if respect_holds && promotions {
-                // A record a hold keeps further down loses its parents here, and with them
-                // every link that leads to it from this record. It is linked to this record
-                // itself, so that the deletion reaches it once its hold is released (GOV-09).
-                for held in self.held_dependents(c, tenant, &level, false, true)? {
-                    kept_held = true;
-                    exec(c, "INSERT OR IGNORE INTO mh_source_ref (memory_id, tenant, source_id, via) VALUES (?1, ?2, ?3, 'promoted')", params![held.to_string(), tenant, ids])?;
-                }
+            // What is followed further: what went, and what a hold kept. A hold on a record
+            // is not a hold on what was promoted from it, so the walk goes on below a held
+            // record while the record itself stays.
+            let frontier: Vec<Uuid> = level.iter().chain(held.iter()).copied().filter(|u| seen.insert(*u)).collect();
+            if frontier.is_empty() || !promotions {
+                break;
             }
-            level = if promotions { self.delete_dependents(c, tenant, &level, false, true, respect_holds)? } else { vec![] };
+            held = if respect_holds { self.held_dependents(c, tenant, &frontier, false, true)? } else { vec![] };
+            // A record a hold keeps further down may lose its parents here, and with them
+            // every link that leads to it from this record. It is linked to this record
+            // itself, so that the deletion reaches it once its hold is released (GOV-09).
+            for kept in &held {
+                kept_held = true;
+                exec(c, "INSERT OR IGNORE INTO mh_source_ref (memory_id, tenant, source_id, via) VALUES (?1, ?2, ?3, 'promoted')", params![kept.to_string(), tenant, ids])?;
+            }
+            level = self.delete_dependents(c, tenant, &frontier, false, true, respect_holds)?;
         }
         if gone.is_empty() {
             return Ok(None);

@@ -624,9 +624,6 @@ impl Engine {
                 span.record("otel.status_code", "ERROR");
                 let msg = format!("{e:#}");
                 let dead = job.attempts >= self.cfg.intake.max_attempts.max(1);
-                // The error names the stage and the provider's status, never the content.
-                tracing::error!("intake of {} failed (attempt {}{}): {msg}", p.id, job.attempts, if dead { ", set aside" } else { "" });
-                metrics::inc("memhouse_intake_total", &[("outcome", if dead { "dead" } else { "retry" })], 1.0);
                 // What is set aside is sanitised under the tenant's policy in force. If that
                 // policy cannot be read now, nothing is stored under weaker rules: the
                 // proposal stays queued and is tried again (GOV-05).
@@ -641,6 +638,12 @@ impl Engine {
                         }
                     }
                 };
+                // Said and counted as what happens to it: set aside only when it is, tried
+                // again otherwise (also at the attempt limit, when its policy cannot be read).
+                // The error names the stage and the provider's status, never the content.
+                let set_aside = dead && rules.is_some();
+                tracing::error!("intake of {} failed (attempt {}{}): {msg}", p.id, job.attempts, if set_aside { ", set aside" } else { "" });
+                metrics::inc("memhouse_intake_total", &[("outcome", if set_aside { "dead" } else { "retry" })], 1.0);
                 if let (true, Some(rules)) = (dead, rules) {
                     // Once more if the insert lost a race (a promotion's source deleted meanwhile):
                     // the second pass sees the deletion and stores the record without its content.

@@ -183,8 +183,9 @@ struct SendError {
 }
 
 /// Send a batch to the collector. Returns how many of its log records the collector rejected
-/// while accepting the rest.
-async fn send_otlp(http: Option<&reqwest::Client>, cfg: &SiemConfig, events: &[AuditEvent], service: &str) -> Result<u64, SendError> {
+/// while accepting the rest; none when the answer was a success whose body could not be read,
+/// so that the number is not known.
+async fn send_otlp(http: Option<&reqwest::Client>, cfg: &SiemConfig, events: &[AuditEvent], service: &str) -> Result<Option<u64>, SendError> {
     // No client, no send: there is no falling back to one that follows redirects.
     let http = http.ok_or_else(|| SendError { message: "OTLP export: the HTTP client could not be set up".into(), permanent: false })?;
     let url = format!("{}/v1/logs", cfg.otlp_endpoint.trim().trim_end_matches('/'));
@@ -201,8 +202,9 @@ async fn send_otlp(http: Option<&reqwest::Client>, cfg: &SiemConfig, events: &[A
     if status.is_success() {
         // A success may still say that some records were rejected. They are not sent again
         // (OTLP forbids repeating a partially accepted request); the caller counts them.
-        let rejected = rejected_records(&resp.text().await.unwrap_or_default()).min(events.len() as u64);
-        return Ok(rejected);
+        // A body that cannot be read is not "none rejected": the request was accepted, so it
+        // is not sent again, and the caller says that the count is unknown.
+        return Ok(resp.text().await.ok().map(|body| rejected_records(&body).min(events.len() as u64)));
     }
     // A redirect is not followed (it would resend the headers elsewhere, or turn the POST into
     // a GET): it is a failure to be fixed in the configuration, as a refused credential or a
@@ -308,14 +310,26 @@ impl Exporter {
                 let events = self.store.audit_after(cursor, size).await?;
                 let Some(last) = events.last() else { break };
                 let sent = match sink {
-                    "syslog" => send_syslog(self.cfg.syslog.trim(), &events, &self.host).await.map(|()| 0).map_err(|e| SendError { message: format!("{e:#}"), permanent: false }),
+                    "syslog" => {
+                        send_syslog(self.cfg.syslog.trim(), &events, &self.host).await.map(|()| Some(0)).map_err(|e| SendError { message: format!("{e:#}"), permanent: false })
+                    }
                     _ => send_otlp(self.http.as_ref(), &self.cfg, &events, &self.service).await,
                 };
                 let mut delivered = events.len() as u64;
                 match sent {
-                    Ok(0) => {}
+                    Ok(Some(0)) => {}
+                    // Accepted, but the answer broke off: whether the collector rejected some
+                    // of the records is not known. Not sent again (it may have taken them all).
+                    Ok(None) => {
+                        tracing::error!("SIEM export: {sink} accepted the {} log records up to audit event {} but its answer could not be read", events.len(), last.id);
+                        pass.errors.push(format!(
+                            "{sink}: the answer for the {} log records up to audit event {} could not be read; whether any was rejected is unknown",
+                            events.len(),
+                            last.id
+                        ));
+                    }
                     // Accepted in part: what the collector rejected is counted, not sent again.
-                    Ok(rejected) => {
+                    Ok(Some(rejected)) => {
                         tracing::error!("SIEM export: {sink} rejected {rejected} of the {} log records up to audit event {}; they are not sent again", events.len(), last.id);
                         pass.errors.push(format!("{sink}: {rejected} of {} log records up to audit event {} rejected by the collector and skipped", events.len(), last.id));
                         pass.skipped += rejected;
@@ -505,7 +519,10 @@ mod tests {
         let partial: &'static str =
             Box::leak(format!("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len()).into_boxed_str());
         let ok = answer_once(partial).await;
-        assert_eq!(send_otlp(Some(&http), &cfg(ok), &[event(), event()], "memhouse").await.ok(), Some(1));
+        assert_eq!(send_otlp(Some(&http), &cfg(ok), &[event(), event()], "memhouse").await.ok(), Some(Some(1)));
+        // A success whose body breaks off: accepted, the number rejected unknown.
+        let cut = answer_once("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 400\r\nconnection: close\r\n\r\n{\"partial").await;
+        assert_eq!(send_otlp(Some(&http), &cfg(cut), &[event()], "memhouse").await.ok(), Some(None));
     }
 
     #[test]

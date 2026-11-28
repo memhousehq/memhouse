@@ -252,7 +252,8 @@ impl SqliteStore {
         let mut ordered: Vec<&LedgerEntry> = entries.iter().collect();
         ordered.sort_by_key(|e| e.at);
         // Retention writes a row per record: one event per tenant says how many, not one each.
-        let mut retention: BTreeMap<&str, (u64, u64)> = BTreeMap::new();
+        // (By the row's own scope: an exact `record` or `record-reset` row is not a retention purge.)
+        let mut retention: BTreeMap<(&str, &str), (u64, u64)> = BTreeMap::new();
         for e in ordered {
             let key = key_of(e);
             if known.contains(&key) {
@@ -304,15 +305,15 @@ impl SqliteStore {
             rep.applied += 1;
             rep.records_removed += removed;
             if e.scope == "retention" || e.scope.starts_with("record") {
-                let t = retention.entry(e.tenant.as_str()).or_default();
+                let t = retention.entry((e.tenant.as_str(), e.scope.as_str())).or_default();
                 *t = (t.0 + 1, t.1 + removed);
             } else {
                 let detail = serde_json::json!({ "scope": e.scope, "deleted_at": e.at, "deleted_by": e.actor, "records": removed });
                 audit_in(&tx, actor, "deletion.reapply", &e.tenant, e.subject.as_deref(), e.memory_id, &detail)?;
             }
         }
-        for (tenant, (entries, records)) in retention {
-            audit_in(&tx, actor, "deletion.reapply", tenant, None, None, &serde_json::json!({ "scope": "retention", "entries": entries, "records": records }))?;
+        for ((tenant, scope), (entries, records)) in retention {
+            audit_in(&tx, actor, "deletion.reapply", tenant, None, None, &serde_json::json!({ "scope": scope, "entries": entries, "records": records }))?;
         }
         if let Some((tenant, mut detail)) = restore {
             detail["ledger"] = serde_json::to_value(&rep)?;

@@ -85,7 +85,10 @@ fn active_holds(c: &Connection, tenant: &str) -> anyhow::Result<i64> {
 fn purge_filter(spec: &PurgeSpec) -> (String, Vec<Value>) {
     let now = now();
     let (mut sql, time) = match spec.age {
-        PurgeAge::OlderThanDays(d) => ("m.created_at < ?3".to_string(), now.saturating_sub(d as i64 * 86_400 * 1_000_000)),
+        PurgeAge::OlderThanDays(d) => (
+            "m.created_at < ?3".to_string(), // (Saturating all the way: an age no record can have selects nothing, and does not wrap.)
+            now.saturating_sub((d as i64).saturating_mul(86_400 * 1_000_000)),
+        ),
         PurgeAge::Expired => ("m.expires_at IS NOT NULL AND m.expires_at < ?3".to_string(), now),
     };
     let mut values = vec![Value::Integer(time)];

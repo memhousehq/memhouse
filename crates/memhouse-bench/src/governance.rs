@@ -1152,6 +1152,8 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
     for c in &mut checks {
         if !memhouse_core::governance::evidence::CHECKS.iter().any(|(id, req)| *id == c.id && *req == c.requirement) {
             c.passed = false;
+            // Also for a check that does not apply to this profile: counted as failed, not skipped.
+            c.not_applicable = None;
             c.detail = format!("not in memhouse_core::governance::evidence::CHECKS with this requirement ({}); add it there. {}", c.requirement, c.detail);
         }
     }

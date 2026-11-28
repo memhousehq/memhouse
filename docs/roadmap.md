@@ -2914,6 +2914,41 @@ hosted checks; what changed:
     than it removed ([governance.md](governance.md#deletion-and-the-right-to-erasure)); a
     `forget` by user has no mark in the store to order a late explanation against; TCP syslog
     has no acknowledgement, so only OTLP delivery is confirmed by the receiver.
+  - **Review fixes, third round (2026-11-28, pull request 42):** a deletion is completed only
+    when the store has no match left (asked of the store, not of the fifty sampled), and
+    recovery goes on past a request that fails. A store without the deletion workflow is
+    erased as before G22, with no certificate event; its retention purge keeps its audit
+    event. One retention pass per tenant runs at a time (a lease). A rule's age that fits no
+    date selects nothing on both stores instead of wrapping; alternative cached vectors of
+    dependents deleted with a record or by retention are removed (Postgres); Lite follows
+    promotions below a held record; a tenant erasure is recorded as complete only after a
+    recount under a lock the pipeline's writes share; a partitioned write refuses an id given
+    twice and attaches representations only to the row it wrote; the replay's audit events
+    keep the ledger row's scope. A recall's explanation is dated by the recall's start. A
+    preview of a forget settles nothing and asks the store whether the record is held.
+    An ingested conversation counts the rounds its policy refused (`refused`). The
+    poison metric counts what is set aside; an OTLP answer that breaks off is reported as
+    unknown; the by-id MCP forget returns `held` as a count; `memhouse retention` reports
+    expired and purged separately; the certificate hint is printed for a completed request;
+    an empty anchor file and `--force` without a backup are refused; the evidence bundle
+    labels its deletion counts as counts of a list and limits its isolation statement.
+    Check scenarios strengthened; still 97. **Known limits, not changed (each needs
+    a persisted structure or a change of the store interface):**
+    - a forget by source, user or agent does not come back for a record derived or promoted
+      from what it deleted that a legal hold kept under another label
+      ([governance.md](governance.md#legal-hold)); a forget by id does;
+    - the note of held descendants kept by a deletion on Postgres is not in the ledger, so a
+      restore of a backup taken before that deletion does not bring it back;
+    - a forget that removes a record still only queued writes no ledger row, so a backup
+      taken before it brings the queued record back on restore;
+    - an exact ledger replay removes queued promotions of the record also where the live
+      operation (a retention purge) left them to be stored as a rejected stub;
+    - a strict write to a partitioned table does not look an id up over every partition (an
+      import does): the service generates the ids of what it writes;
+    - an explanation of a recall made in the five seconds after an erasure of its subject
+      is not stored;
+    - a working record under a legal hold is still marked `expired` at its TTL (the hold
+      keeps the data, not its lifecycle state).
 
 #### G23 — Context-provider plugin system, connectors and importers
 

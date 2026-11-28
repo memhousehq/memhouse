@@ -343,11 +343,17 @@ async fn evidence_write(engine: &Engine, dir: &Path, suite_report: Option<&Path>
     let holds = engine.holds(&tenant, false).await?;
     files.push(("legal-holds.json", json!({ "active": holds.iter().filter(|h| h.active()).count(), "released": holds.iter().filter(|h| !h.active()).count(), "holds": holds })));
 
-    let deletions = engine.store.deletions(&tenant, None, 1000).await?;
+    // The newest requests, up to a limit: the counts below are counts of this list, and are
+    // named so. An older request that is still open may lie outside it (`memhouse deletion
+    // list --status held` asks for those directly).
+    const DELETION_SAMPLE: usize = 1000;
+    let deletions = engine.store.deletions(&tenant, None, DELETION_SAMPLE).await?;
     let count = |s: DeletionStatus| deletions.iter().filter(|d| d.status == s).count();
     files.push((
         "deletions.json",
         json!({
+            "counted": "the newest requests listed here, not every request of the tenant", "listed": deletions.len(), "list_limit": DELETION_SAMPLE,
+            "may_be_more": deletions.len() == DELETION_SAMPLE,
             "completed": count(DeletionStatus::Completed), "held": count(DeletionStatus::Held), "running": count(DeletionStatus::Running),
             "unverified_certificates": deletions.iter().filter(|d| d.certificate.as_ref().is_some_and(|c| !c.verified)).count(),
             "requests": deletions.iter().map(|d| json!({
@@ -362,7 +368,8 @@ async fn evidence_write(engine: &Engine, dir: &Path, suite_report: Option<&Path>
         "isolation.json",
         json!({
             "profile": if engine.is_lite() { "lite" } else { "standard" },
-            "statement_filters": "every statement filters on tenant and subject (governance checks subject_isolation, tenant_isolation, recall_plan_scoped)",
+            "statement_filters": "the statements that read or write a subject's memory for a caller (recall, search, list, get, the write path) filter on tenant and subject (governance checks subject_isolation, tenant_isolation, recall_plan_scoped)",
+            "service_statements": "maintenance and administration read more widely by design: retention, erasure and its cascade, export and import, usage counts and the audit log (which is one chain for the installation) run over a tenant or the whole database, each with its own filters, and on Postgres in the service scope when row-level security is on",
             "row_level_security": engine.store.rls_status().await?,
         }),
     ));

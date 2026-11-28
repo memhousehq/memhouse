@@ -27,7 +27,7 @@ exclusion reasons; 1.10 added the admin console's routes (`/v1/session`,
 `rephrased_from` on its answer, the `principal:manage` permission, the session cookie as a
 third security scheme, and `session` as a value of `via` in `/v1/whoami`; 1.11 added, for
 Governance II, `untrusted` on a forget and as a forget scope, `held` and `deletion_id` on its
-answer, and `retention.scopes`, `redaction.actions` and `write_gate.untrusted_sources` in a
+answer, `refused` on the answer of an ingest (rounds its policy left out; absent when none), and `retention.scopes`, `redaction.actions` and `write_gate.untrusted_sources` in a
 policy spec and its compiled form. Its contract is [`api/openapi.json`](../api/openapi.json), served at
 `/v1/openapi.json`.
 
